@@ -1,0 +1,640 @@
+body {
+    margin: 0.5% 10%;
+}
+/* Header layout */
+header {
+    margin-bottom: 2em;
+    text-align: center;
+    position: relative;
+}
+.nav-bar {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.4em;
+}
+.nav-button {
+    font-size: 1.2em;
+    text-decoration: none;
+    padding: 1em 1.5em;
+    border-radius: 4px;
+    transition: background-color 0.2s ease;
+}
+.dropdown-main-button {
+    display: inline-block;
+    align-items: center;
+    text-align: center;
+    justify-content: center;
+    font-size: 2.2em;
+    text-decoration: none;
+    border: none;
+    padding: 0em 0.4em 0.3em 0.4em;
+}
+#dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0%;
+    border-radius: 1em;
+    justify-content: center;
+    line-height: 1.4em;
+    padding: 2em;
+    opacity: 0;
+    transform: translateY(-30px);
+    pointer-events: none;
+    transition: opacity 0.08s ease, transform 0.22s ease;
+}
+#dropdown.open {
+    opacity: 1;
+    transform: translateY(0px);
+    pointer-events: auto;
+}
+.dropdown-button {
+    display: block;
+    font-size: 1.2em;
+    text-decoration: none;
+    border-radius: 4px;
+}
+.nav-bar-cell {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 0.6em;
+}
+
+
+h1, h2 {
+    text-align: center;
+    font-family: 'Merriweather', serif;
+}
+h1 a {
+    text-decoration: none;
+}
+h4 {
+    font-family: 'Merriweather', serif;
+}
+p, h1, ol, ul, small {
+    margin: 2% 10%;
+}
+p, ol, ul, small {
+    text-align: justify;
+}
+p, ol, ul {
+    font-size: 1.3em;
+    line-height: 1.2em;
+}
+p, a, i, ol, ul, small {
+    font-family: 'Lato', sans-serif;
+}
+.email {
+    font-size: 1.2em;
+}
+.about_me {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 2rem 0;
+    flex-wrap: wrap;
+}
+.about_me img {
+    width: 25%;
+    height: auto;
+    border-radius: 7px;
+    margin-right: 2em;
+}
+.about_me_text {
+    width: 55%;
+}
+.about_me_text h1 {
+    text-align: left;
+}
+
+/* Footer layout */
+footer {
+    text-align: center;
+    margin-top: 5em;
+}
+.picture_box_footer {
+    display: block;
+    margin: auto;
+}
+.picture_box_footer img {
+    width: 3%;
+    height: auto;
+    display: inline-block;
+    opacity: 80%;
+}
+.picture_box_footer img:hover {
+    opacity: 100%;
+}
+
+@media (prefers-color-scheme: light) {
+    body {
+        background-color: white;
+    }
+    h1, h2, p, i, ol, ul, h4, .email, small {
+        color: black;
+    }
+    .email:hover {
+        color: rgb(48, 48, 48);
+    }
+    a {
+        color: #1a0dab;
+    }
+    a:hover {
+        color: #0d0080;
+    }
+    .nav-button {
+        background-color: whitesmoke;
+        color: black;
+    }
+    .nav-button:hover {
+        background-color: lightgray;
+        color: black;
+    }
+    #dropdown.open {
+        background-color: white;
+    }
+    .dropdown-main-button {
+        background-color: white;
+        color: black;
+    }
+    .dropdown-main-button:hover {
+        color: rgb(48, 48, 48);
+    }
+    .dropdown-button {
+        color: black;
+    }
+    .dropdown-button:hover {
+        color: rgb(48, 48, 48);
+    }
+    .dark {
+        display: none;
+    }
+}
+@media (prefers-color-scheme: dark) {
+    body {
+        background-color: #181818;
+    }
+    h1, h2, p, i, ol, ul, h4, .email, small {
+        color: #e0e0e0;
+    }
+    .email:hover {
+        color: white;
+    }
+    a {
+        color: #8ab4f8;
+    }
+    a:hover {
+        color: #a2c0ff;
+    }
+    .nav-button {
+        background-color: #1f1f1f;
+        color: #e0e0e0;
+    }
+    .nav-button:hover {
+        background-color: #333;
+        color: #e0e0e0;
+    }
+    #dropdown.open {
+        background-color: #181818;
+    }
+    .dropdown-main-button {
+        background-color: #181818;
+        color: #e0e0e0;
+    }
+    .dropdown-main-button:hover {
+        color: white;
+    }
+    .dropdown-button {
+        color: #e0e0e0;
+    }
+    .dropdown-button:hover {
+        color: white;
+    }
+    .light {
+        display: none;
+    }
+}
+
+@media only screen and (max-device-width: 550px) {
+    body {
+        margin: 0.5% 3%;
+    }
+    p, h1, ol, ul {
+        margin: 3%;
+    }
+    p, ol, ul {
+        text-align: justify;
+        font-size: 1.2em;
+    }
+    .about_me {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .about_me img {
+        width: 70%;
+        height: auto;
+        border-radius: 7px;
+        margin-right: 0;
+    }
+    .about_me_text {
+        width: 100%;
+    }
+    .about_me_text h1 {
+        text-align: justify;
+    }
+    .picture_box_footer img {
+        width: 14%;
+        opacity: 100%;
+    }
+}
+
+@media (min-width: 551px) and (max-width: 1000px) {
+    body {
+        margin: 0.5%;
+    }
+    p, h1, ol, ul {
+        margin: 3%;
+    }
+    p, ol, ul {
+        text-align: justify;
+        font-size: 1.2em;
+    }
+    .about_me {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .about_me img {
+        width: 50%;
+        height: auto;
+        border-radius: 7px;
+        margin-right: 0;
+    }
+    .about_me_text {
+        width: 95%;
+    }
+    .about_me_text h1 {
+        text-align: justify;
+    }
+    .picture_box_footer img {
+        width: 6%;
+        opacity: 100%;
+    }
+}
+@media (min-width: 1001px) and (max-width: 1280px) {
+    body {
+        margin: 0.5%;
+    }
+    p, h1, ol, ul {
+        margin: 3%;
+    }
+    p, ol, ul {
+        text-align: justify;
+        font-size: 1.2em;
+    }
+}
+@media (min-width: 730px) and (max-width: 789px) {
+    .nav-bar {
+        gap: 0.2em;
+    }
+    .nav-button {
+        padding: 1em 0.35em;
+    }
+}
+@media (min-width: 790px) and (max-width: 920px) {
+    .nav-button {
+        padding: 1em 0.55em;
+    }
+}
+@media (min-width: 921px) and (max-width: 1024px) {
+    .nav-button {
+        padding: 1em 1em;
+    }
+}
+@media (max-width: 799px) {
+    .regular {
+        display: none;
+    }
+}
+@media (min-width: 800px) {
+    .cellphone {
+        display: none;
+    }
+}
+
+/* ======================================================================
+   Additions for the QP Mutation app (quiver-mutation.html).
+   Reuses the tokens/classes above (.nav-bar, .nav-button, Merriweather/
+   Lato, the same light/dark palette) rather than introducing a new look.
+   Nothing above this line is modified.
+   ====================================================================== */
+
+:root {
+    --qp-bg: white;
+    --qp-fg: black;
+    --qp-muted: black;
+    --qp-muted-bg: whitesmoke;
+    --qp-muted-bg-hover: lightgray;
+    --qp-border: #ddd;
+    --qp-link: #1a0dab;
+    --qp-link-hover: #0d0080;
+    --qp-link-soft: #eef0fb;
+    --qp-danger: #a0332a;
+    --qp-danger-soft: #fbeceb;
+    --qp-mono: 'Courier New', Courier, monospace;
+    --qp-sans: 'Lato', sans-serif;
+    --qp-serif: 'Merriweather', serif;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --qp-bg: #181818;
+        --qp-fg: #e0e0e0;
+        --qp-muted: #e0e0e0;
+        --qp-muted-bg: #1f1f1f;
+        --qp-muted-bg-hover: #333;
+        --qp-border: #333;
+        --qp-link: #8ab4f8;
+        --qp-link-hover: #a2c0ff;
+        --qp-link-soft: #202840;
+        --qp-danger: #e2867c;
+        --qp-danger-soft: #3a1e1c;
+    }
+}
+
+.qp-app { max-width: 1180px; margin: 0 auto; color: var(--qp-fg); }
+.qp-app header { margin-bottom: 1em; }
+.qp-app header p { font-size: 1em; color: var(--qp-muted); margin-top: 0; }
+.qp-app header p a { font-family: 'Lato', sans-serif; }
+.qp-app p {font-size: 1.18em;}
+
+.qp-nav-row { margin: 1.2em 0; display: flex; flex-direction: column; align-items: center; gap: 0.6em; }
+.nav-bar.qp-compact .nav-button,
+.nav-bar.qp-compact a.nav-button {
+    font-size: 0.85em;
+    padding: 0.5em 0.9em;
+}
+.nav-button.qp-active {
+    background-color: var(--qp-link) !important;
+    color: white !important;
+}
+.nav-button.qp-danger:hover { color: var(--qp-danger); }
+.nav-button:disabled {
+    opacity: 0.4;
+    cursor: default;
+    pointer-events: none;
+}
+button.nav-button {
+    font-family: 'Lato', sans-serif;
+    cursor: pointer;
+    border: none;
+    appearance: none;
+}
+button.nav-button:focus-visible {
+    outline: 2px solid var(--qp-link);
+    outline-offset: 2px;
+}
+.qp-modal-actions .nav-button {
+    font-size: 0.95em;
+    padding: 0.5em 1em;
+}
+.qp-inspector-actions .nav-button {
+    font-size: 0.85em;
+    padding: 0.4em 0.8em;
+}
+.nav-button.qp-small {
+    font-size: 0.85em;
+    padding: 0.35em 0.7em;
+}
+.qp-ph { color: var(--qp-muted); }
+
+.qp-workspace {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 1.4em;
+    align-items: start;
+}
+@media (max-width: 860px) {
+    .qp-workspace { grid-template-columns: 1fr; }
+}
+
+.qp-canvas-col {
+    display: flex;
+    flex-direction: column;
+    gap: 1.2em;
+    min-width: 0;
+}
+
+.qp-canvas-wrap {
+    position: relative;
+    border: 1px solid var(--qp-border);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--qp-bg);
+    min-height: 440px;
+}
+.qp-canvas-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+
+.qp-hint {
+    position: absolute; left: 12px; bottom: 12px;
+    background: var(--qp-bg);
+    border: 1px solid var(--qp-border);
+    color: var(--qp-muted);
+    font-family: 'Lato', sans-serif;
+    font-size: 0.93em;
+    padding: 0.5em 0.8em;
+    border-radius: 4px;
+    pointer-events: none;
+    max-width: min(75%, 460px);
+}
+.qp-hint b { color: var(--qp-fg); font-weight: 700; }
+
+.qp-banner {
+    position: absolute; left: 12px; right: 12px; top: 12px;
+    display: flex; flex-direction: column; gap: 6px;
+    pointer-events: none;
+}
+.qp-banner .qp-msg {
+    pointer-events: auto;
+    display: flex; align-items: flex-start; gap: 8px;
+    background: var(--qp-bg);
+    border: 1px solid var(--qp-border);
+    border-left: 3px solid var(--qp-fg);
+    border-radius: 4px;
+    padding: 0.5em 0.7em;
+    font-family: 'Lato', sans-serif;
+    font-size: 0.85em;
+    max-width: 620px;
+}
+.qp-banner .qp-msg.qp-warn { border-left-color: var(--qp-danger); color: var(--qp-danger); }
+.qp-banner .qp-msg .qp-x { margin-left: auto; cursor: pointer; color: var(--qp-muted); font-weight: 700; padding: 0 2px; }
+.qp-banner .qp-msg .qp-x:hover { color: var(--qp-fg); }
+
+.qp-panel { display: flex; flex-direction: column; gap: 1.4em; }
+.qp-section h4 {
+    margin: 0 0 0.5em 0;
+    font-size: 0.9em;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--qp-muted);
+    border-bottom: 1px solid var(--qp-border);
+    padding-bottom: 0.35em;
+}
+.qp-section { font-family: 'Lato', sans-serif; font-size: 1em; }
+
+.qp-select, .qp-input {
+    font-family: 'Lato', sans-serif;
+    background: var(--qp-bg);
+    color: var(--qp-fg);
+    border: 1px solid var(--qp-border);
+    border-radius: 4px;
+    padding: 0.4em 0.5em;
+    font-size: 0.95em;
+}
+.qp-select { width: 100%; }
+.qp-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; color: var(--qp-muted); margin-bottom: 0.6em; }
+.qp-field:last-child { margin-bottom: 0; }
+.qp-row { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+
+.qp-term-list { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;}
+.qp-term {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--qp-border);
+    border-radius: 4px;
+    padding: 0.35em 0.55em;
+    cursor: pointer;
+}
+.qp-term:hover { border-color: var(--qp-link); }
+.qp-term.qp-highlighted { border-color: var(--qp-link); background: var(--qp-link-soft); }
+.qp-term .qp-coeff { font-family: var(--qp-mono); font-weight: 700; min-width: 24px; text-align: right; }
+.qp-term .qp-word { font-family: var(--qp-mono); font-size: 0.9em; flex: 1; overflow-x: auto; white-space: nowrap; }
+.qp-term .qp-word .qp-sep { color: var(--qp-muted); padding: 0 2px; }
+.qp-term button.qp-rm {
+    border: none; background: transparent; color: var(--qp-muted);
+    cursor: pointer; font-size: 1em; line-height: 1; padding: 2px 4px; font-family: inherit;
+}
+.qp-term button.qp-rm:hover { color: var(--qp-danger); }
+.qp-empty-note { color: var(--qp-muted); font-style: italic; }
+.qp-app .qp-empty-note { font-size: 0.95em; }
+
+.qp-draft-bar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    border: 1px dashed var(--qp-muted);
+    border-radius: 4px;
+    padding: 0.5em 0.6em;
+    margin-bottom: 0.6em;
+    font-family: var(--qp-mono);
+    font-size: 0.9em;
+}
+
+.qp-inspector-row { display: flex; justify-content: space-between; gap: 8px; font-size: 0.9em; padding: 2px 0; }
+.qp-inspector-row .qp-k { color: var(--qp-muted); }
+.qp-inspector-row .qp-v { font-family: var(--qp-mono); }
+
+.qp-history-list { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow-y: auto; }
+.qp-history-list .qp-h-item {
+    font-size: 0.85em; padding: 3px 6px; border-radius: 4px; cursor: pointer; color: var(--qp-muted);
+}
+.qp-history-list .qp-h-item:hover { background: var(--qp-muted-bg); }
+.qp-history-list .qp-h-item.qp-current { color: var(--qp-link); font-weight: 700; }
+
+details.qp-help summary {
+    cursor: pointer; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--qp-muted); font-weight: 700; list-style: none;
+}
+details.qp-help summary::-webkit-details-marker { display: none; }
+details.qp-help summary::before { content: "+ "; }
+details.qp-help[open] summary::before { content: "- "; }
+details.qp-help .qp-body { padding-top: 0.6em; font-size: 0.92em; color: var(--qp-fg); display: flex; flex-direction: column; gap: 0.6em; }
+details.qp-help .qp-body code { font-family: var(--qp-mono); }
+
+input[type="range"].qp-range { accent-color: var(--qp-fg); width: 100%; }
+
+/* A bundled arrow's name strip: sized/positioned in px by
+   updateBundleNameOverlay() in app.js, one per bundle. Same idea as
+   .qp-term .qp-word below — a name longer than the box scrolls into view
+   instead of being cut down to whatever fits — but scrolled via the custom
+   bar (.qp-bundle-thumb-track/.qp-bundle-thumb) underneath it, not a native
+   scrollbar: on a box this small, a custom-styled native one rendered a
+   thumb with no usable drag range. */
+.qp-bundle-name {
+    position: absolute;
+    font-family: var(--qp-mono);
+    font-size: 10px;
+    line-height: 13px;
+    white-space: nowrap;
+    overflow: hidden; /* scrolled programmatically only, via el.scrollLeft */
+    text-align: left;
+    user-select: none;
+}
+
+.qp-bundle-thumb-track {
+    position: absolute;
+    background: var(--qp-muted-bg);
+    border-radius: 3px;
+    cursor: pointer;
+}
+.qp-bundle-thumb {
+    position: absolute;
+    top: 0; height: 100%;
+    background: var(--qp-muted);
+    border-radius: 3px;
+    cursor: grab;
+}
+.qp-bundle-thumb:hover { background: var(--qp-link); }
+.qp-bundle-thumb.qp-dragging { background: var(--qp-link); cursor: grabbing; }
+
+.qp-modal-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0, 0, 0, 0.4);
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+}
+.qp-modal-overlay.qp-open { display: flex; }
+.qp-modal-box {
+    background: var(--qp-bg);
+    border: 1px solid var(--qp-border);
+    border-radius: 4px;
+    padding: 1.2em;
+    width: min(340px, 100%);
+    display: flex; flex-direction: column; gap: 0.7em;
+    font-family: 'Lato', sans-serif;
+}
+.qp-modal-box h4 { font-family: 'Merriweather', serif; font-size: 1.1em; margin: 0; }
+.qp-modal-box p { font-size: 0.9em; color: var(--qp-muted); margin: 0; }
+.qp-modal-box input[type="text"] { width: 100%; font-size: 0.95em; }
+.qp-modal-actions { display: flex; justify-content: flex-end; gap: 0.5em; margin-top: 2px; flex-wrap: wrap; }
+.qp-modal-box.qp-wide { width: min(560px, 92vw); }
+.qp-modal-box textarea {
+    width: 100%;
+    height: 220px;
+    resize: vertical;
+    box-sizing: border-box;
+    font-family: var(--qp-mono);
+    font-size: 0.8em;
+    background: var(--qp-muted-bg);
+    color: var(--qp-fg);
+    border: 1px solid var(--qp-border);
+    border-radius: 4px;
+    padding: 0.6em;
+}
+
+.qp-credit { text-align: center; color: var(--qp-muted); font-size: 0.85em; padding: 0.6em 0 1.2em; font-family: 'Lato', sans-serif; }
+
+/* Explicit light/dark override (e.g. a hosting page's theme toggle) beats
+   the OS preference above. Same values as the dark block above. */
+:root[data-theme="dark"] {
+    --qp-bg: #181818;
+    --qp-fg: #e0e0e0;
+    --qp-muted: #aaa;
+    --qp-muted-bg: #1f1f1f;
+    --qp-muted-bg-hover: #333;
+    --qp-border: #333;
+    --qp-link: #8ab4f8;
+    --qp-link-hover: #a2c0ff;
+    --qp-link-soft: #202840;
+    --qp-danger: #e2867c;
+    --qp-danger-soft: #3a1e1c;
+}

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QP Mutation</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="app.js" defer></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css" integrity="sha384-vKruj+a13U8yHIkAyGgK1J3ArTLzrFGBbBc0tDp4ad/EyewESeXE/Iv67Aj8gKZ0" crossorigin="anonymous">
+        <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.js" integrity="sha384-PwRUT/YqbnEjkZO0zZxNqcxACrXe+j766U2amXcgMg5457rve2Y7I6ZJSm2A0mS4" crossorigin="anonymous"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+        <script>
+            document.addEventListener("DOMContentLoaded", function() {
+                renderMathInElement(document.body, {
+                delimiters: [
+                    {left: '\\(', right: '\\)', display: false},
+                    {left: '\\[', right: '\\]', display: true},
+                    {left: "\\begin{align}", right: "\\end{align}", display: true},
+                    {left: "\\begin{align*}", right: "\\end{align*}", display: true}
+                ],
+                throwOnError : false
+                });
+            });
+        </script>
+  <link rel="stylesheet" href="style.css">
+  <link rel="apple-touch-icon" sizes="180x180" href="./images/favicon_io/apple-touch-icon.png" media="(prefers-color-scheme: light)">
+  <link rel="icon" type="image/png" sizes="32x32" href="./images/favicon_io/favicon-32x32.png" media="(prefers-color-scheme: light)">
+  <link rel="icon" type="image/png" sizes="16x16" href="./images/favicon_io/favicon-16x16.png" media="(prefers-color-scheme: light)">
+  <link rel="apple-touch-icon" sizes="180x180" href="./images/favicon_io_dark/apple-touch-icon.png" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" sizes="32x32" href="./images/favicon_io_dark/favicon-32x32.png" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" sizes="16x16" href="./images/favicon_io_dark/favicon-16x16.png" media="(prefers-color-scheme: dark)">
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
+  <meta name="description" content="Applet to mutate quivers with potentials.">
+  <meta name="author" content="Samuel Leblanc">
+  <meta name="keywords" content="Samuel Leblanc, mathematics, algebra, representation theory, quivers, potentials, jacobian algebra, cluster algebras, mutations">
+  <meta property="og:title" content="QP Mutation">
+  <meta property="og:description" content="Applet to mutate quivers with potentials.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://samueleblanc.com/qpmutation">
+  </head>
+
+<body>
+  <div class="qp-app">
+
+  <header>
+    <h1>QP Mutation</h1>
+  </header>
+
+  <nav class="qp-nav-row">
+    <div class="nav-bar" id="modeSeg">
+      <button class="nav-button qp-active" data-mode="select" title="Shortcut: V">Select</button>
+      <button class="nav-button" data-mode="vertex" title="Shortcut: A">Vertex</button>
+      <button class="nav-button" data-mode="arrow" title="Shortcut: R">Arrow</button>
+      <button class="nav-button" data-mode="term" title="Shortcut: T">Potential term</button>
+      <button class="nav-button" data-mode="mutate" title="Shortcut: M">Mutate</button>
+      <button class="nav-button" data-mode="erase" title="Shortcut: E">Erase</button>
+    </div>
+    <div class="nav-bar qp-compact">
+      <button class="nav-button" id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+      <button class="nav-button" id="redoBtn" title="Redo (Ctrl+Shift+Z)">Redo</button>
+      <button class="nav-button" id="relabelBtn" title="Rename every vertex 1…n and every arrow a1…an, in creation order. Only labels change — the underlying quiver and potential are untouched.">Relabel</button>
+      <button class="nav-button" id="exportBtn">Export JSON</button>
+      <button class="nav-button" id="importBtn">Import JSON</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none">
+      <button class="nav-button qp-danger" id="clearBtn">Clear</button>
+    </div>
+  </nav>
+
+  <main class="qp-workspace">
+    <div class="qp-canvas-col">
+      <div class="qp-canvas-wrap" id="canvasWrap">
+        <canvas id="cv"></canvas>
+        <div class="qp-banner" id="banner">
+          <div class="qp-msg qp-warn" id="structWarn" style="display:none"></div>
+        </div>
+        <div class="qp-hint" id="hint">Pick <b>Vertex</b>, click empty canvas to place. Then <b>Arrow</b>: click source, then target.</div>
+      </div>
+      
+      <p>
+        This applet implements Derksen–Weyman–Zelevinsky's mutation of quivers with potentials (<a href="https://arxiv.org/abs/0704.0649" target="_blank">arXiv:0704.0649</a>). 
+        This website is inspired by Keller's <a href="https://webusers.imj-prg.fr/~bernhard.keller/quivermutation/" target="_blank">quiver mutation applet</a>.</p>
+      <p>
+        The code was generated with the assistance of Anthropic's Sonnet 5, based on instructions and materials provided by <a href="https://samueleblanc.com/" target="_blank">the author</a>.
+      </p>
+      
+      <p>
+      <b>How does it work?</b><br>The part worth explaining is how the reduction (to go from the premutation to the mutation) of the quiver with potential is done. <br>
+      <b>Background.</b> 
+      Let \(Q = (Q_0,Q_1,h,t)\) be a quiver and let \(K\) be a field. Put \(R = K^{Q_0}\) and \(A = K^{Q_1}\). The complete path algebra of \(Q\) is \[R\langle\langle A\rangle\rangle = \prod_{d=0}^\infty A^d\] and the arrow ideal \(\mathfrak{m}\) is the (two-sided) ideal of \(R\langle\langle A\rangle\rangle\) with powers \[\mathfrak{m}^n = \prod_{d=n}^\infty A^d.\] 
+      Let \((A,S)\) be a quiver with potential. 
+      Write \(S^{(n)}\) for the subset of \(S\) consisting of all cycles of length \(n\). 
+       If \(S^{(2)} = 0\), then \((A,S)\) is already reduced. Assume \(S^{(2)} \neq 0\) and write \(S^{(2)} = \sum_{i=1}^M\lambda_ia_ib_i\), where \(0\neq\lambda_i\in K\), \(a_i\) is an arrow from \(t_i\) to \(h_i\), and \(b_i\) is an arrow from \(h_i\) to \(t_i\). Write \(A_{x,y}\) for the subspace of \(A\) spanned by the arrows from \(x\) to \(y\). We fix a basis of this vector space. <br> 
+      <b>Step 1. (Change of bases to get a potential like Equation (4.6) of [DWZ]).</b> Put the coefficients \(\lambda_i\) in a matrix \(\Lambda\) which corresponds to the bilinear pairing \(\Lambda : A_{t_i,h_i} \times A_{h_i,t_i} \to A^2\). Do a change of basis on \(A_{t_i,h_i}\) and on \(A_{h_i,t_i}\) so that \(\Lambda\), in these new bases, is both in reduced row echelon form and in reduced column echelon form. By fixing all other arrows, these changes of bases yield a right-equivalence of quivers with potentials. Write \(S'\) for the new potential. It is of the form \[S' = \sum_{i=1}^m (a_i'b_i' + a_i'u_i + v_ib_i') + S'',\] where each of the \(2m\) arrows \(a_1,b_1,\ldots,a_m,b_m\) are distinct, each \(u_i\) and \(v_i\) is a linear combination of paths of length at least \(2\), and \(S''\) consists only of cycles of length at least \(3\), where none of them contains an \(a_i\) or a \(b_i\). This is Equation (4.6) of [DWZ]. If \(u_i = 0 = v_i\) for all \(i=1,\ldots,m\), then we have the desired decomposition of the Splitting Theorem (Theorem 4.6 in [DWZ]). Otherwise, we go to the next step.<br>
+      
+      <b>Step 2. (Reduction like in Lemmas 4.7 and 4.8 of [DWZ]).</b> We do like in the proof of Lemmas 4.7 and 4.8 of [DWZ], but stop either when \(u_i = 0 = v_i\) for all \(i=1,\ldots,m\), or when the length of \(u_i\) and \(v_i\) reach the maximal length of a potential term (currently set to <span id="maxLenVal1">8</span>). More precisely, given a potential (which we may write like \(S'\) above), we apply the automorphism \(\varphi : R\langle\langle A \rangle\rangle \to R\langle\langle A \rangle\rangle\) defined by \[\varphi(a_i') = a_i' - v_i, \quad \varphi(b_i') = b_i' - u_i,\; \text{ and }\; \varphi(c) = c,\] for all other arrows \(c\) of \(Q\). Note that there is not a unique way of picking each \(u_i\) and \(v_i\). The algorithm first takes \(u_1\) to be the sum of whatever comes with every occurrences of \(a_1\). Next, \(v_1\) is picked to be everything that comes with \(b_1\), unless it also comes with \(a_1\). We continue with \(a_2,b_2,\ldots,a_m,b_m\). This gives a way of defining \(\varphi\). Now, assume that \(u_i,v_i \in \mathfrak{m}^n\) for all \(i=1,\ldots,m\) (where \(n\) is between \(2\) and the maximal length of a potential term). Then, \[\varphi(S') = \sum_{i=1}^m (a_i'b_i' + a_i'u_i' + v_i'b_i') + S'''\] is such that \(u_i',v_i' \in \mathfrak{m}^{2n}\) for all \(i=1,\ldots,m\), which implies that the algorithm terminates. <br>
+      <b>Remark.</b> Like mentioned in Remark 5 of [LF] and studied further in Section 2 of [L], it is quite often the case that the limiting process of [DWZ] is not needed and so the above algorithm yields the correct potential, with no approximations involved. However, when such a truncation of the potential is needed, the applet lets the user know. 
+      </p>
+      
+      <p><b>References.</b><br>[DWZ] Harm Derksen, Jerzy Weyman, and Andrei Zelevinski. <a href="https://arxiv.org/abs/0704.0649" target="_blank">Quivers with potentials and their representations I: Mutations</a>. Selecta Mathematica (2008).<br>
+      [LF] Daniel Labardini-Fragoso. <a href="https://arxiv.org/abs/0803.1328" target="_blank">Quivers with potentials associated to triangulated surfaces</a>. Proceedings of the London Mathematical Society (2009).<br>
+      [L] Sefi Ladkani. <a href="https://arxiv.org/abs/2306.03818" target="_blank">Non-degenerate potentials on the quiver \(X_7\)</a>. Journal of Algebra (2025).
+      </p>
+    </div>
+
+    <aside class="qp-panel">
+      <div class="qp-section">
+        <h4>Presets</h4>
+        <select class="qp-select" id="presetSel">
+          <option value="">— choose a preset —</option>
+          <option value="empty3">3-cycle quiver</option>
+          <option value="x7">X₇ quiver (Derksen-Owen) with Ladkani's potential W₀</option>
+          <option value="pentagon">Pentagon quiver</option>
+          <option value="markov">Markov quiver with Labardini-Fragoso's potential</option>
+        </select>
+      </div>
+
+      <div class="qp-section">
+        <h4>Coefficient field</h4>
+        <div class="qp-row">
+          <select class="qp-select" id="fieldKind" style="flex: 1 1 auto">
+            <option value="Q">ℚ (rational numbers)</option>
+            <option value="Fp">𝔽ₚ (prime field, mod p)</option>
+          </select>
+          <input class="qp-input" type="number" id="fieldP" min="2" step="1" value="2" style="width: 70px; display: none" title="p must be prime">
+        </div>
+        <div class="qp-row" style="margin-top: 6px">
+          <button class="nav-button qp-small" id="fieldApplyBtn">Apply</button>
+          <span class="qp-ph" id="fieldCurrent">currently ℚ</span>
+        </div>
+      </div>
+
+      <div class="qp-section">
+        <h4>Potential (<span id="termCount">0</span>)</h4>
+        <div class="qp-draft-bar" id="draftBar" style="display:none"></div>
+        <div class="qp-term-list" id="termList"></div>
+        <p class="qp-empty-note" id="termEmpty">No terms yet — switch to <b>Potential term</b> mode and click a chain of composable arrows that closes into a cycle.</p>
+      </div>
+
+      <div class="qp-section" id="inspectorCard" style="display:none">
+        <h4>Inspector</h4>
+        <div id="inspectorBody"></div>
+      </div>
+
+      <div class="qp-section">
+        <h4>Settings</h4>
+        <label class="qp-field">
+          Max cycle length kept after mutation: <b id="maxLenVal">8</b>
+          <input class="qp-range" type="range" id="maxLenRange" min="4" max="16" step="1" value="8">
+        </label>
+        <div class="qp-inspector-row"><span class="qp-k">Vertices</span><span class="qp-v" id="statV">0</span></div>
+        <div class="qp-inspector-row"><span class="qp-k">Arrows</span><span class="qp-v" id="statA">0</span></div>
+        <div class="qp-inspector-row" id="statIssueRow" style="display:none"><span class="qp-k">Loops / 2-cycles</span><span class="qp-v" id="statIssues" style="color: var(--qp-danger)">0</span></div>
+      </div>
+
+      <div class="qp-section">
+        <h4>History (<span id="histCount">0</span>)</h4>
+        <div class="qp-history-list" id="histList"></div>
+      </div>
+    </aside>
+  </main>
+
+  <div class="qp-modal-overlay" id="modalOverlay">
+    <div class="qp-modal-box">
+      <h4 id="modalTitle">Title</h4>
+      <p id="modalMsg"></p>
+      <input type="text" id="modalInput" style="display:none">
+      <textarea id="modalTextarea" style="display:none" readonly></textarea>
+      <div class="qp-modal-actions" id="modalExtraActions" style="display:none">
+        <button class="nav-button" id="modalCopy">Copy to clipboard</button>
+        <button class="nav-button" id="modalDownload">Download .json</button>
+      </div>
+      <div class="qp-modal-actions">
+        <button class="nav-button" id="modalCancel">Cancel</button>
+        <button class="nav-button" id="modalOk">OK</button>
+      </div>
+    </div>
+  </div>
+  </div>
+</body>
+</html>
