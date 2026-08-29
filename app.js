@@ -458,7 +458,7 @@ function QPEngine() {
   // diagonalization block's new arrows are defined by the columns of the
   // INVERSE of the change of basis (see diagonalizeQuadraticPart), and a
   // mutation's composite arrows carry names that grow with every round
-  // ([[ab]c'] and worse). A block can create hundreds of arrows and a
+  // ([[ab]c*] and worse). A block can create hundreds of arrows and a
   // mutation thousands, essentially none of which the user ever looks at —
   // so an arrow may instead be created with label: null plus a `labelDef`
   // recording how to name it, and labelOf() does the work the first time
@@ -476,7 +476,7 @@ function QPEngine() {
     let label;
     if (!def) label = '#' + arrow.id;
     else if (def.kind === 'compose') label = '[' + labelOf(def.left) + labelOf(def.right) + ']';
-    else if (def.kind === 'reverse') label = labelOf(def.of) + "'";
+    else if (def.kind === 'reverse') label = labelOf(def.of) + "*";
     else label = blockLabels(def.block, def.side)[def.idx] ?? ('#' + arrow.id);
     arrow.label = label;
     arrow.labelDef = undefined;
@@ -757,7 +757,7 @@ function QPEngine() {
       return result;
     }
 
-    report('Rewriting ' + potential.size + ' potential term(s)');
+    report('Rewriting ' + potential.size + ' potential term' + (potential.size > 1 ? 's' : ''));
     const bracketed = new Map();
     for (const { word, coeff } of potential.values()) { const bw = bracketWord(word); if (bw) potAdd(bracketed, bw, coeff); }
     const deltaW = new Map();
@@ -823,7 +823,7 @@ function QPEngine() {
         const MAX_SPLIT_ROUNDS = maxLen + 6;
         let round = 0;
         for (;;) {
-          report('Splitting ' + pairs.length + ' two-cycle pair(s), round ' + (round + 1));
+          report('Splitting ' + pairs.length + ' two-cycle pair' + (pairs.length > 1 ? 's' : '') + ', round ' + (round + 1));
           const { u, v } = splitByPriority(current, pairs, priorityOf, roleOf);
           const converged = pairs.every((_, idx) => u[idx].size === 0 && v[idx].size === 0);
           if (converged) break;
@@ -886,7 +886,7 @@ function QPEngine() {
       const back = dirCount.get(tgt + ',' + src);
       if (back) residual2Cycles += n * back;
     }
-    if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle(s) (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate.`);
+    if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle` + (residual2Cycles > 1 ? 's' : '') + ' (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate.');
 
     const newQuiver = { vertices: quiver.vertices, arrows, nextVertexId: quiver.nextVertexId, nextArrowId: nextId };
     // Dedupe as a safety net — every message above is pushed from exactly
@@ -976,7 +976,7 @@ function isValidCyclicWord(quiver, word) {
 // cloned is a plain string either way:
 //   * up to LABEL_FORCE_LIMIT arrows, resolve the real names (measured at
 //     ~54 ms for 1400 arrows, so this stays comfortably interactive);
-//   * past it, give the name up. Composed names at that size ([[ab]c'] and
+//   * past it, give the name up. Composed names at that size ([[ab]c*] and
 //     worse, already 34 characters after four mutations) are unreadable,
 //     the bundle view collapses those arrows anyway, and '#id' is what
 //     labelOf falls back to for an unnamed arrow regardless.
@@ -1135,7 +1135,7 @@ function loadPreset(name) {
   state.quiver = Q; state.potential = W; state.selection = null; state.termDraft = []; state.arrowDraftSource = null; state.highlightedTermKey = null;
   history = []; historyIndex = -1;
   snapshot('Preset: ' + (name || 'empty'));
-  if (badTerms.length) addMessage(`Discarded ${badTerms.length} malformed potential term(s) from this preset (internal bug — please report).`, 'warn');
+  if (badTerms.length) addMessage(`Discarded ${badTerms.length} malformed potential term` + (badTerms.length > 1 ? 's' : '') + ' from this preset (internal bug — please report).', 'warn');
   // The Markov triangle's lowest vertices would otherwise sit under the
   // bottom-left hint box, so pull it up above the canvas's vertical middle.
   fitView(name === 'markov' ? 0.4 : 0.5);
@@ -1218,7 +1218,7 @@ function deserializeState(text) {
   fitView();
   renderAll();
   if (badEntries) addMessage(`Skipped ${badEntries} vertex/arrow entr${badEntries > 1 ? 'ies' : 'y'} with a bad id or missing endpoints.`, 'warn');
-  if (skipped) addMessage(`Skipped ${skipped} potential term(s) that weren't closed, composable cycles, or valid in this field.`, 'warn');
+  if (skipped) addMessage(`Skipped ${skipped} potential term` + (skipped > 1 ? 's' : '') + ` that weren't closed, composable cycles, or valid in this field.`, 'warn');
   if (fieldWarning) addMessage(fieldWarning, 'warn');
 }
 
@@ -2207,8 +2207,8 @@ function pruneTermsReferencingMissingArrows() {
   if (state.highlightedTermKey !== null && !state.potential.has(state.highlightedTermKey)) state.highlightedTermKey = null;
 }
 
-// After a few mutations, arrow labels accumulate brackets and primes
-// (e.g. a''''[[ab]c']) since each mutation composes/reverses the arrows
+// After a few mutations, arrow labels accumulate brackets and stars
+// (e.g. a****[[ab]c*]) since each mutation composes/reverses the arrows
 // it touches by name. Relabeling only touches the *display* labels —
 // vertex and arrow ids, and every word in the potential (which is stored
 // by id, not label), are untouched, so this is always safe and never
@@ -2629,7 +2629,7 @@ function applyFieldSwitch(target) {
   snapshot('Switch field to ' + (target.kind === 'Q' ? 'Q' : ('F_' + target.p)));
   syncFieldUI();
   renderAll();
-  if (dropped) addMessage(`${dropped} potential term(s) dropped — their denominator wasn't invertible in the new field.`, 'warn');
+  if (dropped) addMessage(`${dropped} potential term` + (dropped > 1 ? 's' : '') + ` dropped — their denominator wasn't invertible in the new field.`, 'warn');
   else addMessage('Switched coefficient field.', 'ok');
 }
 

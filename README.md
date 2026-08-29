@@ -20,7 +20,7 @@ N.B. If a text file opens, right-click on it and click on *Open with* [your favo
 
 ### Acknowledgement
 
-The code was generated with the assistance of Anthropic's Sonnet 5, based on instructions and materials provided by <a href="https://samueleblanc.com/" target="_blank">the author</a>.
+The code was generated with the assistance of Claude, based on instructions and materials provided by <a href="https://samueleblanc.com/" target="_blank">the author</a>.
 
 ### License
 
