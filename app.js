@@ -4,7 +4,17 @@
    reduction step implements DWZ's Splitting Theorem via Lemmas 4.7-4.8,
    arXiv:0704.0649).
    ====================================================================== */
-const QP = (function () {
+// Defined as a named factory rather than an IIFE so that its source can be
+// handed to a Web Worker verbatim: QPEngine.toString() returns exactly the
+// text below, which makeWorkerSource() drops into a Blob the worker is
+// built from. Two consequences worth respecting when editing this:
+//   * nothing in here may reference anything outside it (it will not exist
+//     in the worker), and
+//   * it carries its own 'use strict', since the file-level one does not
+//     travel with the source text.
+// It is also why this file must not be minified with name mangling.
+function QPEngine() {
+  'use strict';
   // ---------- Coefficient fields: exact rationals (Q), or a prime field F_p ----------
   // Every function below this point only ever touches coefficients through
   // fadd/fsub/fmul/fdiv/fneg/finv/fisZero/feq/fone/fzero/fToString/F. None
@@ -12,6 +22,21 @@ const QP = (function () {
   // make every computation — potentials, mutation, the linear-algebra
   // diagonalization — run over the new field with no other changes.
   function gcdBig(a, b) { a = a < 0n ? -a : a; b = b < 0n ? -b : b; while (b) { [a, b] = [b, a % b]; } return a; }
+  function gcdNum(a, b) { a = a < 0 ? -a : a; b = b < 0 ? -b : b; while (b) { const t = a % b; a = b; b = t; } return a; }
+  // Coefficients are {n, d} whose two components are either both plain
+  // Numbers or both BigInts, and Numbers are the canonical form whenever
+  // the value fits exactly in a double (|n|, d <= 2^53-1). BigInt
+  // arithmetic is roughly 20x slower than Number arithmetic here and
+  // allocates on every single operation, while the overwhelming majority
+  // of coefficients in a QP computation are small integers. Every
+  // operation below therefore tries the Number path first and redoes
+  // itself in BigInt only when an intermediate would leave the exact
+  // range; any BigInt result that fits comes back down. Because a value
+  // has exactly ONE representation either way, equality and zero-testing
+  // stay simple comparisons (they still tolerate a mixed pair, cheaply).
+  const toBig = (v) => (typeof v === 'bigint' ? v : BigInt(v));
+  const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+  const isSafe = Number.isSafeInteger;
 
   function isPrime(nRaw) {
     const n = typeof nRaw === 'bigint' ? nRaw : BigInt(nRaw);
@@ -36,48 +61,154 @@ const QP = (function () {
   }
 
   const RationalField = (() => {
-    function make(n, d = 1n) {
-      n = BigInt(n); d = BigInt(d);
-      if (d === 0n) throw new Error('division by zero');
-      if (d < 0n) { n = -n; d = -d; }
-      const g = gcdBig(n, d) || 1n;
+    // Both components exact Numbers, d !== 0: reduce and fix the sign.
+    function fromNum(n, d) {
+      if (d < 0) { n = -n; d = -d; }
+      if (d === 1) return { n, d: 1 };
+      const g = gcdNum(n, d) || 1;
       return { n: n / g, d: d / g };
     }
+    // Same in BigInt, demoting back to Numbers when the reduced value fits
+    // — that demotion is what keeps the representation canonical.
+    function fromBig(n, d) {
+      if (d === 0n) throw new Error('division by zero');
+      if (d < 0n) { n = -n; d = -d; }
+      if (d !== 1n) { const g = gcdBig(n, d) || 1n; n /= g; d /= g; }
+      if (n <= MAX_SAFE_BIG && -n <= MAX_SAFE_BIG && d <= MAX_SAFE_BIG) return { n: Number(n), d: Number(d) };
+      return { n, d };
+    }
+    function make(n, d = 1) {
+      if (typeof n === 'number' && typeof d === 'number') {
+        if (d === 0) throw new Error('division by zero');
+        if (isSafe(n) && isSafe(d)) return fromNum(n, d);
+      }
+      return fromBig(toBig(n), toBig(d));
+    }
+    const bothNum = (x, y) => typeof x.n === 'number' && typeof y.n === 'number';
+    // isSafe() on an integer result is an exact overflow test: two exact
+    // integer doubles whose true sum/product exceeds 2^53-1 always round
+    // to something >= 2^53, which isSafe rejects. So a Number path that
+    // passes these checks computed the exact value, and one that fails
+    // falls through to BigInt with nothing lost.
     return {
       kind: 'Q', label: 'Q',
       make,
-      add: (x, y) => make(x.n * y.d + y.n * x.d, x.d * y.d),
-      sub: (x, y) => make(x.n * y.d - y.n * x.d, x.d * y.d),
-      mul: (x, y) => make(x.n * y.n, x.d * y.d),
-      div: (x, y) => make(x.n * y.d, x.d * y.n),
-      neg: (x) => make(-x.n, x.d),
+      add: (x, y) => {
+        if (bothNum(x, y)) {
+          if (x.d === 1 && y.d === 1) { const s = x.n + y.n; if (isSafe(s)) return { n: s, d: 1 }; }
+          else {
+            const a = x.n * y.d, b = y.n * x.d, d = x.d * y.d, s = a + b;
+            if (isSafe(a) && isSafe(b) && isSafe(d) && isSafe(s)) return fromNum(s, d);
+          }
+        }
+        return fromBig(toBig(x.n) * toBig(y.d) + toBig(y.n) * toBig(x.d), toBig(x.d) * toBig(y.d));
+      },
+      sub: (x, y) => {
+        if (bothNum(x, y)) {
+          if (x.d === 1 && y.d === 1) { const s = x.n - y.n; if (isSafe(s)) return { n: s, d: 1 }; }
+          else {
+            const a = x.n * y.d, b = y.n * x.d, d = x.d * y.d, s = a - b;
+            if (isSafe(a) && isSafe(b) && isSafe(d) && isSafe(s)) return fromNum(s, d);
+          }
+        }
+        return fromBig(toBig(x.n) * toBig(y.d) - toBig(y.n) * toBig(x.d), toBig(x.d) * toBig(y.d));
+      },
+      mul: (x, y) => {
+        if (bothNum(x, y)) {
+          const n = x.n * y.n, d = x.d * y.d;
+          if (isSafe(n) && isSafe(d)) return (x.d === 1 && y.d === 1) ? { n, d: 1 } : fromNum(n, d);
+        }
+        return fromBig(toBig(x.n) * toBig(y.n), toBig(x.d) * toBig(y.d));
+      },
+      div: (x, y) => {
+        if (y.n === 0 || y.n === 0n) throw new Error('division by zero');
+        if (bothNum(x, y)) {
+          const n = x.n * y.d, d = x.d * y.n;
+          if (isSafe(n) && isSafe(d)) return fromNum(n, d);
+        }
+        return fromBig(toBig(x.n) * toBig(y.d), toBig(x.d) * toBig(y.n));
+      },
+      // Already reduced with d > 0, and negating changes neither — so this
+      // needs no normalization pass at all, in either representation.
+      neg: (x) => ({ n: -x.n, d: x.d }),
       inv: (x) => make(x.d, x.n),
-      isZero: (x) => x.n === 0n,
-      eq: (x, y) => x.n === y.n && x.d === y.d,
-      toString: (x) => (x.d === 1n ? x.n.toString() : `${x.n}/${x.d}`),
+      isZero: (x) => x.n === 0 || x.n === 0n,
+      eq: (x, y) => x.n == y.n && x.d == y.d, // eslint-disable-line eqeqeq -- exact across Number/BigInt
+      toString: (x) => (x.d === 1 || x.d === 1n ? String(x.n) : `${x.n}/${x.d}`),
     };
   })();
 
-  function makePrimeField(p) {
-    p = BigInt(p);
+  // Extended Euclid in Number arithmetic. Only used when p < 2^26, where
+  // every intermediate (q * s is bounded by ~2p, residue products by p^2)
+  // stays well inside the exact-integer range of a double.
+  function modInverseNum(aRaw, p) {
+    let a = aRaw % p; if (a < 0) a += p;
+    if (a === 0) throw new Error(`0 has no inverse mod ${p}`);
+    let oldR = a, r = p, oldS = 1, s = 0;
+    while (r !== 0) {
+      const q = Math.floor(oldR / r);
+      const tr = oldR - q * r; oldR = r; r = tr;
+      const ts = oldS - q * s; oldS = s; s = ts;
+    }
+    return ((oldS % p) + p) % p;
+  }
+
+  // For p < 2^26 every residue, and every product of two residues, is an
+  // exact double — so the whole field runs in plain Number arithmetic with
+  // no BigInt allocation anywhere in the inner loop. Elements are still
+  // {n, d} with d = 1, and n is always already reduced into [0, p), so the
+  // operations below can take their inputs at face value; only make(),
+  // which is the one entry point for foreign values, reduces.
+  const SMALL_PRIME_LIMIT = 67108864n; // 2^26
+  function makeSmallPrimeField(pBig) {
+    const p = Number(pBig);
+    const red = (n) => { const m = n % p; return m < 0 ? m + p : m; };
+    const toRes = (v) => (typeof v === 'bigint' ? Number(((v % pBig) + pBig) % pBig) : red(v));
+    function make(n, d = 1) {
+      const dr = toRes(d);
+      if (dr === 0) throw new Error(`denominator is 0 mod ${p}`);
+      const nr = toRes(n);
+      return { n: dr === 1 ? nr : (nr * modInverseNum(dr, p)) % p, d: 1 };
+    }
+    return {
+      kind: 'Fp', p: pBig, label: `F_${p}`,
+      make,
+      add: (x, y) => { const s = x.n + y.n; return { n: s >= p ? s - p : s, d: 1 }; },
+      sub: (x, y) => { const s = x.n - y.n; return { n: s < 0 ? s + p : s, d: 1 }; },
+      mul: (x, y) => ({ n: (x.n * y.n) % p, d: 1 }),
+      div: (x, y) => { if (y.n === 0) throw new Error('division by zero'); return { n: (x.n * modInverseNum(y.n, p)) % p, d: 1 }; },
+      neg: (x) => ({ n: x.n === 0 ? 0 : p - x.n, d: 1 }),
+      inv: (x) => { if (x.n === 0) throw new Error('division by zero'); return { n: modInverseNum(x.n, p), d: 1 }; },
+      isZero: (x) => x.n === 0 || x.n === 0n,
+      eq: (x, y) => x.n == y.n, // eslint-disable-line eqeqeq -- exact across Number/BigInt
+      toString: (x) => String(x.n),
+    };
+  }
+
+  function makePrimeField(pRaw) {
+    const p = toBig(pRaw);
     if (!isPrime(p)) throw new Error(`${p} is not prime`);
-    const reduce = (n) => { n = BigInt(n) % p; return n < 0n ? n + p : n; };
+    if (p < SMALL_PRIME_LIMIT) return makeSmallPrimeField(p);
+    // p too large for exact double arithmetic: keep the BigInt field. Its
+    // operations coerce, since the shared fone/fzero constants are Numbers.
+    const reduce = (n) => { n = toBig(n) % p; return n < 0n ? n + p : n; };
+    const x_isZero = (x) => x.n === 0n || x.n === 0;
     function make(n, d = 1n) {
       const dr = reduce(d);
       if (dr === 0n) throw new Error(`denominator is 0 mod ${p}`);
-      return { n: reduce(BigInt(n) * modInverse(dr, p)), d: 1n };
+      return { n: reduce(toBig(n) * modInverse(dr, p)), d: 1n };
     }
     return {
       kind: 'Fp', p, label: `F_${p}`,
       make,
-      add: (x, y) => ({ n: reduce(x.n + y.n), d: 1n }),
-      sub: (x, y) => ({ n: reduce(x.n - y.n), d: 1n }),
-      mul: (x, y) => ({ n: reduce(x.n * y.n), d: 1n }),
-      div: (x, y) => { if (y.n === 0n) throw new Error('division by zero'); return { n: reduce(x.n * modInverse(y.n, p)), d: 1n }; },
-      neg: (x) => ({ n: reduce(-x.n), d: 1n }),
-      inv: (x) => { if (x.n === 0n) throw new Error('division by zero'); return { n: modInverse(x.n, p), d: 1n }; },
-      isZero: (x) => x.n === 0n,
-      eq: (x, y) => x.n === y.n,
+      add: (x, y) => ({ n: reduce(toBig(x.n) + toBig(y.n)), d: 1n }),
+      sub: (x, y) => ({ n: reduce(toBig(x.n) - toBig(y.n)), d: 1n }),
+      mul: (x, y) => ({ n: reduce(toBig(x.n) * toBig(y.n)), d: 1n }),
+      div: (x, y) => { if (x_isZero(y)) throw new Error('division by zero'); return { n: reduce(toBig(x.n) * modInverse(toBig(y.n), p)), d: 1n }; },
+      neg: (x) => ({ n: reduce(-toBig(x.n)), d: 1n }),
+      inv: (x) => { if (x_isZero(x)) throw new Error('division by zero'); return { n: modInverse(toBig(x.n), p), d: 1n }; },
+      isZero: (x) => x.n === 0n || x.n === 0,
+      eq: (x, y) => x.n == y.n, // eslint-disable-line eqeqeq -- exact across Number/BigInt
       toString: (x) => x.n.toString(),
     };
   }
@@ -86,7 +217,7 @@ const QP = (function () {
   function getField() { return CoeffField; }
   function setField(field) { CoeffField = field; }
 
-  function F(n, d = 1n) { return CoeffField.make(n, d); }
+  function F(n, d = 1) { return CoeffField.make(n, d); }
   const fadd = (x, y) => CoeffField.add(x, y);
   const fsub = (x, y) => CoeffField.sub(x, y);
   const fmul = (x, y) => CoeffField.mul(x, y);
@@ -96,8 +227,10 @@ const QP = (function () {
   const fisZero = (x) => CoeffField.isZero(x);
   const feq = (x, y) => CoeffField.eq(x, y);
   // 0 and 1 have the same {n,d} shape in every field this module supports,
-  // so these stay valid across setField() calls with no redefinition.
-  const fone = { n: 1n, d: 1n }, fzero = { n: 0n, d: 1n };
+  // so these stay valid across setField() calls with no redefinition. They
+  // are Numbers: that is the canonical representation in Q and in every
+  // small prime field, and the BigInt fallbacks coerce their inputs.
+  const fone = { n: 1, d: 1 }, fzero = { n: 0, d: 1 };
   function fToString(x) { return CoeffField.toString(x); }
   function fParse(str) {
     str = String(str).trim();
@@ -127,16 +260,26 @@ const QP = (function () {
   }
 
   function canonicalWord(word) {
-    // Pick one word in the equivalence class of words up to cyclical equivalence
+    // Pick one word in the equivalence class of words up to cyclical
+    // equivalence: the lexicographically least rotation. Found by comparing
+    // rotations in place through index arithmetic rather than materializing
+    // them — the old version allocated n arrays of length n on every call,
+    // and this is called on every single potAdd.
     const n = word.length;
-    let best = null;
-    for (let i = 0; i < n; i++) {
-      const rot = word.slice(i).concat(word.slice(0, i));
-      if (best === null || lexLess(rot, best)) best = rot;
+    if (n < 2) return word.slice();
+    let best = 0;
+    for (let i = 1; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const x = word[best + j < n ? best + j : best + j - n];
+        const y = word[i + j < n ? i + j : i + j - n];
+        if (x !== y) { if (y < x) best = i; break; }
+      }
     }
-    return best;
+    if (best === 0) return word.slice();
+    const out = new Array(n);
+    for (let j = 0; j < n; j++) out[j] = word[best + j < n ? best + j : best + j - n];
+    return out;
   }
-  function lexLess(a, b) { for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] < b[i]; } return false; }
   function keyOf(word) { return word.join(','); }
 
   function potAdd(map, word, coeff) {
@@ -157,21 +300,6 @@ const QP = (function () {
     const m = new Map();
     for (const [k, v] of map) { if (v.word.length <= maxLen) m.set(k, v); else if (truncated) truncated.value = true; }
     return m;
-  }
-  function cyclicDerivative(map, arrowId) {
-    const out = new Map();
-    for (const { word, coeff } of map.values()) {
-      const n = word.length;
-      for (let i = 0; i < n; i++) {
-        if (word[i] !== arrowId) continue;
-        const path = word.slice(i + 1).concat(word.slice(0, i));
-        const key = keyOf(path);
-        const existing = out.get(key);
-        const nc = existing ? fadd(existing.coeff, coeff) : coeff;
-        if (fisZero(nc)) out.delete(key); else out.set(key, { path, coeff: nc });
-      }
-    }
-    return out;
   }
   // Do two potentials (as term maps) hold exactly the same terms with the
   // same coefficients? Used to detect a fixed point of the splitting
@@ -227,31 +355,50 @@ const QP = (function () {
     // the cap by a long replacement) without ever leaving behind a
     // recognizable "stray reference to a deleted arrow" for a caller to
     // spot on its own, so this is the only way such a drop gets reported.
+    //
+    // Expansion is a depth-first walk over the word writing into one shared
+    // buffer, so a branch costs nothing until it completes a word: the
+    // previous version copied the whole partial word (concat) at every
+    // position of every branch. The walk visits the branches in the same
+    // order as that version did, so terms still reach potAdd in the same
+    // order and identical potentials come out.
+    //
+    // `map` is expected to be keyed the way every potential in this module
+    // is — each key the canonical key of its own word — which is what lets
+    // the untouched-term path below reuse a key instead of recomputing it.
     const out = new Map();
-    const dropped = (arr) => { if (truncated && arr.length > maxLen) truncated.value = true; };
-    for (const { word, coeff } of map.values()) {
-      let partials = [{ arr: [], c: coeff }];
-      for (const id of word) {
-        const subs = substitutions.get(id);
-        const nextPartials = [];
-        for (const p of partials) {
-          if (p.arr.length > maxLen) { dropped(p.arr); continue; }
-          if (subs) {
-            for (const { path, coeff: pc } of subs) {
-              const arr = p.arr.concat(path);
-              if (arr.length > maxLen) { dropped(arr); continue; }
-              nextPartials.push({ arr, c: fmul(p.c, pc) });
-            }
-          } else {
-            nextPartials.push({ arr: p.arr.concat([id]), c: p.c });
-          }
+    const buf = [];
+    const merge = (key, word, c) => {
+      const existing = out.get(key);
+      const nc = existing ? fadd(existing.coeff, c) : c;
+      if (fisZero(nc)) out.delete(key); else out.set(key, { word, coeff: nc });
+    };
+    for (const [key, { word, coeff }] of map) {
+      // A term naming none of the substituted arrows comes through the
+      // expansion below completely unchanged, so hand it straight over.
+      // Typically most of the potential: a diagonalization block touches
+      // one vertex pair, and a splitting round touches only the 2N arrows
+      // of its 2-cycles. Its word is already canonical (that is what the
+      // key means), so this skips canonicalWord and the copying both.
+      let touched = false;
+      for (let i = 0; i < word.length; i++) if (substitutions.has(word[i])) { touched = true; break; }
+      if (!touched) {
+        if (word.length > maxLen) { if (truncated) truncated.value = true; continue; }
+        if (word.length >= 2) merge(key, word, coeff);
+        continue;
+      }
+      const n = word.length;
+      const walk = (i, len, c) => {
+        if (len > maxLen) { if (truncated) truncated.value = true; return; }
+        if (i === n) { potAdd(out, buf.slice(0, len), c); return; }
+        const subs = substitutions.get(word[i]);
+        if (!subs) { buf[len] = word[i]; walk(i + 1, len + 1, c); return; }
+        for (const { path, coeff: pc } of subs) {
+          for (let j = 0; j < path.length; j++) buf[len + j] = path[j];
+          walk(i + 1, len + path.length, fmul(c, pc));
         }
-        partials = nextPartials;
-      }
-      for (const p of partials) {
-        if (p.arr.length > maxLen) { dropped(p.arr); continue; }
-        potAdd(out, p.arr, p.c);
-      }
+      };
+      walk(0, 0, coeff);
     }
     return out;
   }
@@ -298,12 +445,56 @@ const QP = (function () {
     if (entries.length === 0) return '0';
     let s = '';
     entries.forEach(([label, c], idx) => {
-      const neg = c.n < 0n;
+      const neg = c.n < 0;
       const absC = neg ? fneg(c) : c;
       const coeffStr = feq(absC, fone) ? '' : fToString(absC) + '·';
       s += (idx === 0 ? (neg ? '-' : '') : (neg ? ' - ' : ' + ')) + coeffStr + label;
     });
     return s;
+  }
+
+  // ---------- Arrow labels, computed on demand ----------
+  // Naming a new arrow is display work, and it is expensive: a
+  // diagonalization block's new arrows are defined by the columns of the
+  // INVERSE of the change of basis (see diagonalizeQuadraticPart), and a
+  // mutation's composite arrows carry names that grow with every round
+  // ([[ab]c'] and worse). A block can create hundreds of arrows and a
+  // mutation thousands, essentially none of which the user ever looks at —
+  // so an arrow may instead be created with label: null plus a `labelDef`
+  // recording how to name it, and labelOf() does the work the first time
+  // (if ever) someone actually asks. Every read of an arrow's name, inside
+  // this module and out, goes through labelOf.
+  //
+  // The definitions form a DAG over strictly older arrow objects (a
+  // composite points at the two arrows it composes, a diagonalization
+  // arrow at its block), so this always terminates; forcing a label caches
+  // the string and drops the definition, releasing that chain.
+  function labelOf(arrow) {
+    if (!arrow) return '?';
+    if (arrow.label != null) return arrow.label;
+    const def = arrow.labelDef;
+    let label;
+    if (!def) label = '#' + arrow.id;
+    else if (def.kind === 'compose') label = '[' + labelOf(def.left) + labelOf(def.right) + ']';
+    else if (def.kind === 'reverse') label = labelOf(def.of) + "'";
+    else label = blockLabels(def.block, def.side)[def.idx] ?? ('#' + arrow.id);
+    arrow.label = label;
+    arrow.labelDef = undefined;
+    return label;
+  }
+  // All the new arrows on one side of a diagonalization block at once: the
+  // matrix inverse is taken once per side, and only if some label on that
+  // side is ever asked for.
+  function blockLabels(block, side) {
+    const key = side === 'A' ? 'labelsA' : 'labelsB';
+    if (block[key]) return block[key];
+    const ids = side === 'A' ? block.A : block.B;
+    const combos = side === 'A' ? block.rowCombo : block.colCombo;
+    const mat = combos.map(combo => ids.map(id => combo.get(id) || fzero));
+    const inv = invertMatrix(mat);
+    const names = ids.map(id => labelOf(block.oldArrows.get(id)));
+    block[key] = combos.map((_, k) => comboLabel(new Map(names.map((nm, r) => [nm, inv[r][k]]))));
+    return block[key];
   }
 
   // Diagonalize the quadratic (length-2) part of a potential so every arrow
@@ -322,29 +513,47 @@ const QP = (function () {
   // that any bilinear form has a normal form (a block of nonzero pivots,
   // zero elsewhere) under independent invertible changes of basis on each
   // side. Mutates `arrows` in place (via idBox, a {value} id counter).
-  function diagonalizeQuadraticPart(quiver, arrows, current, warnings, maxLen, idBox, truncated) {
-    const byPair = new Map(); // "lo,hi" -> {lo, hi, toHi:[ids lo->hi], toLo:[ids hi->lo]}
-    for (const a of arrows.values()) {
-      if (a.source === a.target) continue;
-      const [lo, hi] = a.source < a.target ? [a.source, a.target] : [a.target, a.source];
+  function diagonalizeQuadraticPart(arrows, current, maxLen, idBox, truncated) {
+    // Index the quadratic part itself rather than every pair of parallel
+    // arrows. Only an arrow that actually appears in some length-2 term can
+    // be moved by the elimination below: an arrow whose row (or column) of
+    // the pairing matrix is zero is never chosen as a pivot and never gets
+    // a nonzero elimination factor, so it comes out of the process exactly
+    // as it went in. Restricting the block to the pairing's support keeps
+    // the cost tied to the rank of the pairing instead of to the number of
+    // parallel arrows, which after a few mutations runs into the thousands
+    // — and it is the same computation: a matrix that is the support block
+    // plus zero rows and columns diagonalizes as the support block does.
+    const byPair = new Map(); // "lo,hi" -> {lo, hi, rows:Set, cols:Set, entries:Map}
+    for (const t of current.values()) {
+      if (t.word.length !== 2) continue;
+      const a0 = arrows.get(t.word[0]), a1 = arrows.get(t.word[1]);
+      if (!a0 || !a1) continue;
+      if (a0.source === a0.target || a1.source === a1.target) continue;
+      if (a0.target !== a1.source || a1.target !== a0.source) continue; // not a 2-cycle
+      const lo = Math.min(a0.source, a0.target), hi = Math.max(a0.source, a0.target);
       const key = lo + ',' + hi;
       let g = byPair.get(key);
-      if (!g) { g = { lo, hi, toHi: [], toLo: [] }; byPair.set(key, g); }
-      (a.source === lo ? g.toHi : g.toLo).push(a.id);
+      if (!g) { g = { lo, hi, rows: new Set(), cols: new Set(), entries: new Map() }; byPair.set(key, g); }
+      // the arrow running lo->hi indexes the rows, the one running hi->lo the columns
+      const row = a0.source === lo ? t.word[0] : t.word[1];
+      const col = a0.source === lo ? t.word[1] : t.word[0];
+      g.rows.add(row); g.cols.add(col);
+      g.entries.set(row + ',' + col, t.coeff);
     }
 
+    // Substitutions from every block are collected and applied to the
+    // potential in ONE pass at the end. Blocks touch disjoint sets of
+    // arrows, so this is the same rewrite as substituting block by block,
+    // minus a full traversal of the potential per block.
+    const substitutions = new Map();
+
     for (const g of byPair.values()) {
-      const A = g.toHi.slice().sort((x, y) => x - y);
-      const B = g.toLo.slice().sort((x, y) => x - y);
+      const A = [...g.rows].sort((x, y) => x - y);
+      const B = [...g.cols].sort((x, y) => x - y);
       if (A.length === 0 || B.length === 0) continue;
 
-      const M = A.map(() => B.map(() => fzero));
-      for (let p = 0; p < A.length; p++) {
-        for (let q = 0; q < B.length; q++) {
-          const t = current.get(keyOf(canonicalWord([A[p], B[q]])));
-          if (t) M[p][q] = t.coeff;
-        }
-      }
+      const M = A.map(r => B.map(c => g.entries.get(r + ',' + c) || fzero));
       const rowNz = M.map(row => row.filter(x => !fisZero(x)).length);
       const colNz = B.map((_, q) => A.filter((_, p) => !fisZero(M[p][q])).length);
       const alreadyReduced = rowNz.every(c => c <= 1) && colNz.every(c => c <= 1) &&
@@ -392,48 +601,67 @@ const QP = (function () {
         }
       }
 
-      // Fresh arrows for the WHOLE block. rowCombo/colCombo (used directly,
-      // no inverse) are exactly what the substitution needs; each new
-      // arrow's own label — its definition in terms of the OLD arrows — is
-      // a different quantity: column k of Rinv=invert(rowCombo) for the A
-      // side, column l of Qinv=invert(colCombo) for the B side.
-      const oldLabel = id => arrows.get(id)?.label ?? ('#' + id);
-      const Rmat = rowCombo.map(combo => A.map(id => combo.get(id) || fzero));
-      const Qmat = colCombo.map(combo => B.map(id => combo.get(id) || fzero));
-      const Rinv = invertMatrix(Rmat), Qinv = invertMatrix(Qmat);
-      const newA = rowCombo.map((_, k) => {
+      // rowCombo/colCombo (used directly, no inverse) are exactly what the
+      // substitution needs. A new arrow's own label — its definition in
+      // terms of the OLD arrows — is a different quantity: column k of
+      // Rinv=invert(rowCombo) for the A side, column l of Qinv=invert(
+      // colCombo) for the B side. That inversion is display work only, so
+      // the block records what it needs and labelOf() runs it on demand.
+      //
+      // A row the elimination never touched still carries its original
+      // basis vector, and a fresh arrow for it would be the old arrow
+      // under a new name: an identical copy, plus a substitution entry,
+      // plus a label, for nothing. Those keep their existing arrow, so
+      // only genuinely recombined arrows are replaced.
+      const block = { A, B, rowCombo, colCombo, oldArrows: new Map() };
+      for (const id of A) block.oldArrows.set(id, arrows.get(id));
+      for (const id of B) block.oldArrows.set(id, arrows.get(id));
+      const isIdentity = (combo, id) => combo.size === 1 && combo.has(id) && feq(combo.get(id), fone);
+      const newA = rowCombo.map((combo, k) => {
+        if (isIdentity(combo, A[k])) return A[k];
         const id = idBox.value++;
-        const defCombo = new Map(A.map((oldId, r) => [oldLabel(oldId), Rinv[r][k]]));
-        arrows.set(id, { id, label: comboLabel(defCombo), source: g.lo, target: g.hi });
+        arrows.set(id, { id, label: null, labelDef: { block, side: 'A', idx: k }, source: g.lo, target: g.hi });
         return id;
       });
-      const newB = colCombo.map((_, l) => {
+      const newB = colCombo.map((combo, l) => {
+        if (isIdentity(combo, B[l])) return B[l];
         const id = idBox.value++;
-        const defCombo = new Map(B.map((oldId, c) => [oldLabel(oldId), Qinv[c][l]]));
-        arrows.set(id, { id, label: comboLabel(defCombo), source: g.hi, target: g.lo });
+        arrows.set(id, { id, label: null, labelDef: { block, side: 'B', idx: l }, source: g.hi, target: g.lo });
         return id;
       });
 
-      const substitutions = new Map();
-      A.forEach((oldId) => {
+      const addSubstitution = (oldId, combos, news) => {
         const parts = [];
-        rowCombo.forEach((combo, k) => { const c = combo.get(oldId); if (c && !fisZero(c)) parts.push({ path: [newA[k]], coeff: c }); });
+        combos.forEach((combo, k) => { const c = combo.get(oldId); if (c && !fisZero(c)) parts.push({ path: [news[k]], coeff: c }); });
+        // An arrow that maps to itself with coefficient 1 needs no rewriting.
+        if (parts.length === 1 && parts[0].path[0] === oldId && feq(parts[0].coeff, fone)) return;
         substitutions.set(oldId, parts);
-      });
-      B.forEach((oldId) => {
-        const parts = [];
-        colCombo.forEach((combo, k) => { const c = combo.get(oldId); if (c && !fisZero(c)) parts.push({ path: [newB[k]], coeff: c }); });
-        substitutions.set(oldId, parts);
-      });
+      };
+      A.forEach((oldId) => addSubstitution(oldId, rowCombo, newA));
+      B.forEach((oldId) => addSubstitution(oldId, colCombo, newB));
 
-      current = applySubstitution(current, substitutions, maxLen + 4, truncated);
-      for (const oldId of A) arrows.delete(oldId);
-      for (const oldId of B) arrows.delete(oldId);
+      // Only arrows that were actually replaced disappear; the ones reused
+      // above are still in the quiver (and are their own new basis vector).
+      const kept = new Set([...newA, ...newB]);
+      for (const oldId of A) if (!kept.has(oldId)) arrows.delete(oldId);
+      for (const oldId of B) if (!kept.has(oldId)) arrows.delete(oldId);
     }
+
+    // Capped at maxLen, not above it: substituted paths are never shorter
+    // than the arrow they replace, so a word already past the cap can only
+    // grow and can never contribute to the final potential. Carrying such
+    // words further was work spent on terms guaranteed to be discarded.
+    if (substitutions.size > 0) current = applySubstitution(current, substitutions, maxLen, truncated);
     return current;
   }
 
-  function mutateQP(quiver, potential, k, maxLen = 8) {
+  // `onProgress`, when given, is called with a short human-readable stage
+  // name at each point below where the work changes character. It exists so
+  // a caller running this off the main thread (see the worker in PART 6)
+  // can say what it is doing during a mutation that takes minutes; when it
+  // is absent this function behaves exactly as before.
+  function mutateQP(quiver, potential, k, maxLen = 8, onProgress) {
+    const report = onProgress || (() => {});
     const warnings = [];
     // Shared across the whole function: every length-cap-driven drop below
     // (potTruncate's own cap, diagonalizeQuadraticPart's substitution, each
@@ -441,42 +669,60 @@ const QP = (function () {
     // before returning, so a single warning covers all of them regardless
     // of which stage actually did the dropping.
     const truncated = { value: false };
+    // One pass over the arrows sorts them into the three roles the mutation
+    // needs and collects k's neighbours on each side, instead of four
+    // separate traversals.
+    const incoming = [], outgoing = [], untouched = [];
+    const sourcesToK = new Set(), targetsFromK = new Set();
     for (const a of quiver.arrows.values()) {
-      if (a.source === k && a.target === k) throw new Error('Cannot mutate at a vertex with a loop.');
+      // DWZ mutation is defined for loop-free quivers, not merely loop-free
+      // at k. A loop elsewhere passes through the premutation untouched, but
+      // the reduction then meets a "2-cycle" built out of loops, which is
+      // neither a genuine 2-cycle between two vertices nor something the
+      // change of basis in diagonalizeQuadraticPart can move: depending on
+      // the potential it either trips the overlap guard below (reported as
+      // an internal error, which it is not) or quietly deletes the loops as
+      // a trivial summand. Reject it here instead, where the offending
+      // vertex can be named.
+      if (a.source === a.target) {
+        if (a.source === k) throw new Error('Cannot mutate at a vertex with a loop.');
+        const lv = quiver.vertices.get(a.source);
+        throw new Error(`Cannot mutate: the quiver has a loop at vertex ${lv ? lv.label : a.source}. QP mutation needs a loop-free quiver.`);
+      }
+      if (a.target === k) { incoming.push(a); sourcesToK.add(a.source); }
+      else if (a.source === k) { outgoing.push(a); targetsFromK.add(a.target); }
+      else untouched.push(a);
     }
     // DWZ mutation mu_k is only defined when k is not incident to a 2-cycle:
     // under the premutation such a pair collapses to a loop at the far
     // vertex, and the reduction step cannot get rid of it. A 2-cycle that
     // does NOT touch k is fine — the reduction below removes it, and this
     // agrees with mutating the reduced potential (mu-tilde respects
-    // right-equivalence).
-    const incidentToK = [...quiver.arrows.values()].filter(a => a.source === k || a.target === k);
-    for (let i = 0; i < incidentToK.length; i++) {
-      for (let j = i + 1; j < incidentToK.length; j++) {
-        const a = incidentToK[i], b = incidentToK[j];
-        if (a.source === b.target && a.target === b.source) {
-          throw new Error('Cannot mutate at a vertex incident to a 2-cycle — DWZ mutation is not defined there. Remove the 2-cycle first.');
-        }
+    // right-equivalence). Two arrows incident to a loop-free k form a
+    // 2-cycle exactly when some vertex is both a source of an arrow into k
+    // and the target of one out of k, so intersecting those two sets
+    // decides it without comparing every pair.
+    for (const j of targetsFromK) {
+      if (sourcesToK.has(j)) {
+        throw new Error('Cannot mutate at a vertex incident to a 2-cycle.');
       }
     }
-    const incoming = [...quiver.arrows.values()].filter(a => a.target === k && a.source !== k);
-    const outgoing = [...quiver.arrows.values()].filter(a => a.source === k && a.target !== k);
-    const untouched = [...quiver.arrows.values()].filter(a => a.source !== k && a.target !== k);
 
+    report('Composing arrows through the mutation vertex');
     let nextId = quiver.nextArrowId;
     const newArrows = new Map();
     const compositeOf = new Map();
     for (const beta of incoming) {
       for (const alpha of outgoing) {
         const id = nextId++;
-        newArrows.set(id, { id, label: `[${beta.label}${alpha.label}]`, source: beta.source, target: alpha.target });
+        newArrows.set(id, { id, label: null, labelDef: { kind: 'compose', left: beta, right: alpha }, source: beta.source, target: alpha.target });
         compositeOf.set(beta.id + '_' + alpha.id, id);
       }
     }
     const reversedOf = new Map();
     for (const a of [...incoming, ...outgoing]) {
       const id = nextId++;
-      newArrows.set(id, { id, label: a.label + "'", source: a.target, target: a.source });
+      newArrows.set(id, { id, label: null, labelDef: { kind: 'reverse', of: a }, source: a.target, target: a.source });
       reversedOf.set(a.id, id);
     }
     for (const a of untouched) newArrows.set(a.id, { ...a });
@@ -511,6 +757,7 @@ const QP = (function () {
       return result;
     }
 
+    report('Rewriting ' + potential.size + ' potential term(s)');
     const bracketed = new Map();
     for (const { word, coeff } of potential.values()) { const bw = bracketWord(word); if (bw) potAdd(bracketed, bw, coeff); }
     const deltaW = new Map();
@@ -521,11 +768,12 @@ const QP = (function () {
     let tildeW = new Map();
     for (const t of bracketed.values()) potAdd(tildeW, t.word, t.coeff);
     for (const t of deltaW.values()) potAdd(tildeW, t.word, t.coeff);
-    tildeW = potTruncate(tildeW, maxLen + 2, truncated);
+    tildeW = potTruncate(tildeW, maxLen, truncated);
 
     let arrows = newArrows;
     const idBox = { value: nextId };
-    let current = diagonalizeQuadraticPart(quiver, arrows, tildeW, warnings, maxLen, idBox, truncated);
+    report('Diagonalizing the quadratic part');
+    let current = diagonalizeQuadraticPart(arrows, tildeW, maxLen, idBox, truncated);
     nextId = idBox.value;
 
     const removedIds = new Set();
@@ -575,6 +823,7 @@ const QP = (function () {
         const MAX_SPLIT_ROUNDS = maxLen + 6;
         let round = 0;
         for (;;) {
+          report('Splitting ' + pairs.length + ' two-cycle pair(s), round ' + (round + 1));
           const { u, v } = splitByPriority(current, pairs, priorityOf, roleOf);
           const converged = pairs.every((_, idx) => u[idx].size === 0 && v[idx].size === 0);
           if (converged) break;
@@ -584,7 +833,7 @@ const QP = (function () {
             substitutions.set(p.gamma, [{ path: [p.gamma], coeff: fone }, ...[...v[idx].values()].map(({ path, coeff }) => ({ path, coeff: fneg(coeff) }))]);
             substitutions.set(p.delta, [{ path: [p.delta], coeff: fone }, ...[...u[idx].values()].map(({ path, coeff }) => ({ path, coeff: fneg(coeff) }))]);
           });
-          const next = potTruncate(applySubstitution(current, substitutions, maxLen + 4, truncated), maxLen, truncated);
+          const next = potTruncate(applySubstitution(current, substitutions, maxLen, truncated), maxLen, truncated);
           if (potEqual(next, current)) { current = next; break; } // no further change visible at this length cap
           current = next;
           round++;
@@ -596,6 +845,7 @@ const QP = (function () {
         }
       }
     }
+    report('Finishing up');
     current = potTruncate(current, maxLen, truncated);
 
     let strayFound = false;
@@ -617,17 +867,26 @@ const QP = (function () {
     // forced to exactly zero — a real 2-cycle even though no length-2
     // potential term names it. That's the genuine degeneracy witness;
     // scanning `current` for length-2 terms alone would miss it.
-    const survivingArrows = [...arrows.values()];
-    let residual2Cycles = 0;
-    for (let i = 0; i < survivingArrows.length; i++) {
-      const a = survivingArrows[i];
+    // Counted from the multiplicities of each directed vertex pair — the
+    // number of 2-cycles between i and j is (arrows i->j) * (arrows j->i),
+    // summed over unordered pairs. Same number as comparing every pair of
+    // arrows, without the quadratic scan (which, on a quiver that has just
+    // grown to tens of thousands of arrows, dominated the whole mutation).
+    const dirCount = new Map();
+    for (const a of arrows.values()) {
       if (a.source === a.target) continue;
-      for (let j = i + 1; j < survivingArrows.length; j++) {
-        const b = survivingArrows[j];
-        if (a.source === b.target && a.target === b.source) residual2Cycles++;
-      }
+      const key = a.source + ',' + a.target;
+      dirCount.set(key, (dirCount.get(key) || 0) + 1);
     }
-    if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle(s) (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate at this vertex.`);
+    let residual2Cycles = 0;
+    for (const [key, n] of dirCount) {
+      const comma = key.indexOf(',');
+      const src = +key.slice(0, comma), tgt = +key.slice(comma + 1);
+      if (src >= tgt) continue; // count each unordered pair once
+      const back = dirCount.get(tgt + ',' + src);
+      if (back) residual2Cycles += n * back;
+    }
+    if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle(s) (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate.`);
 
     const newQuiver = { vertices: quiver.vertices, arrows, nextVertexId: quiver.nextVertexId, nextArrowId: nextId };
     // Dedupe as a safety net — every message above is pushed from exactly
@@ -640,9 +899,11 @@ const QP = (function () {
     F, fadd, fsub, fmul, fdiv, fneg, finv, fisZero, feq, fone, fzero, fToString, fParse,
     RationalField, makePrimeField, getField, setField, isPrime,
     makeQuiver, addVertex, addArrow, defaultArrowLabel,
-    canonicalWord, potAdd, potTruncate, potEqual, cyclicDerivative, splitByPriority, applySubstitution, mutateQP,
+    canonicalWord, potAdd, potTruncate, potEqual, splitByPriority, applySubstitution, mutateQP,
+    labelOf,
   };
-})();
+}
+const QP = QPEngine();
 
 /* ======================================================================
    PART 2 — application state, presets, serialization
@@ -657,8 +918,6 @@ function freshState() {
     arrowDraftSource: null,   // vertex id while placing an arrow
     termDraft: [],            // array of arrow ids
     dragVertex: null,
-    warnings: [],
-    lastMutation: null,
     highlightedTermKey: null, // canonical key of a potential term clicked in the side list, or null
   };
 }
@@ -709,11 +968,85 @@ function isValidCyclicWord(quiver, word) {
   return true;
 }
 
+// An arrow created by a mutation may still carry `labelDef` instead of a
+// name (see labelOf) — a pointer into a chain of older arrow objects, and
+// for a diagonalization arrow into that block's whole coefficient matrix.
+// structuredClone follows all of it, so a lazy label drags its entire
+// naming chain into every history entry. Settle them first, so what gets
+// cloned is a plain string either way:
+//   * up to LABEL_FORCE_LIMIT arrows, resolve the real names (measured at
+//     ~54 ms for 1400 arrows, so this stays comfortably interactive);
+//   * past it, give the name up. Composed names at that size ([[ab]c'] and
+//     worse, already 34 characters after four mutations) are unreadable,
+//     the bundle view collapses those arrows anyway, and '#id' is what
+//     labelOf falls back to for an unnamed arrow regardless.
+// This runs on the live quiver, not on the copy, which is the point: it
+// also releases the chain the live state was holding.
+// Two separate ways a name gets too expensive to keep, and the second is
+// the one that actually bites. A composite's name is '[' + left + right +
+// ']', so a name DOUBLES in length with every mutation that touches it —
+// measured on the 15-arrow X_7 preset, the longest arrow name runs 78
+// characters after 10 mutations, 1,902 after 30, and 1,744,546 after 70,
+// at which point one history entry costs 14 MB. Arrow COUNT never notices:
+// the quiver still has 15 arrows. So cap the name itself, not just the
+// number of them. Capping also cuts the growth off at the root, since the
+// next generation composes names from the short ones this pass leaves.
+const LABEL_FORCE_LIMIT = 5000;   // arrows: past this, don't even build names
+const LABEL_MAX_CHARS = 2000;     // per name: past this, nobody can read it anyway
+let labelCapNoticed = false;
+function settleArrowLabels() {
+  const build = state.quiver.arrows.size <= LABEL_FORCE_LIMIT;
+  let capped = 0;
+  for (const a of state.quiver.arrows.values()) {
+    if (a.label == null) {
+      if (!build) { a.label = '#' + a.id; a.labelDef = undefined; continue; }
+      QP.labelOf(a);
+    }
+    // '#id' is exactly what labelOf falls back to for an arrow with no name,
+    // so a capped arrow is indistinguishable from a never-named one — better
+    // than a truncated prefix, which two different arrows could share.
+    if (a.label.length > LABEL_MAX_CHARS) { a.label = '#' + a.id; capped++; }
+  }
+  if (capped && !labelCapNoticed) {
+    labelCapNoticed = true;
+    addMessage('Some arrow names had grown too long to keep and are now shown as ids. Use Relabel for clean names — the quiver and potential are unaffected.', 'warn');
+  }
+}
+
+// History is capped by retained SIZE, not just by entry count: 60 entries is
+// nothing for a 12-arrow quiver and fatal for a 100,000-arrow one, which a
+// few mutations of a mutation-infinite quiver reaches (3 -> 12 -> 24 -> 108
+// -> 1401 -> 114384). The newest entry is never evicted: a single snapshot
+// larger than the whole budget still has to be reachable.
+//
+// snapWeight estimates BYTES rather than counting abstract units, because
+// the two things a snapshot holds are on wildly different scales: measured
+// against structuredClone, roughly 100 bytes per structural item (arrow,
+// vertex, arrow of a potential word) and 2 per UTF-16 character of an arrow
+// name. Leaving names out of the count was the whole reason an earlier
+// version of this cap could be sailed straight past — see settleArrowLabels.
+// The estimate runs high (it read ~24 MB for a snapshot that measured 14),
+// which is the safe direction for a budget.
+const HISTORY_MAX_ENTRIES = 60;
+const HISTORY_BUDGET_BYTES = 32e6;
+function snapWeight(snap) {
+  let bytes = 100 * (snap.quiver.arrows.size + snap.quiver.vertices.size);
+  for (const t of snap.potential.values()) bytes += 100 * t.word.length;
+  for (const a of snap.quiver.arrows.values()) bytes += 2 * (a.label ? a.label.length : 0);
+  return bytes;
+}
+
 function snapshot(label) {
+  settleArrowLabels();
   const snap = structuredClone({ quiver: state.quiver, potential: state.potential, maxLen: state.maxLen });
   history = history.slice(0, historyIndex + 1);
-  history.push({ label, snap });
-  if (history.length > 60) history.shift();
+  history.push({ label, snap, weight: snapWeight(snap) });
+  let total = 0;
+  for (const h of history) total += h.weight;
+  while (history.length > 1 && (history.length > HISTORY_MAX_ENTRIES || total > HISTORY_BUDGET_BYTES)) {
+    total -= history[0].weight;
+    history.shift();
+  }
   historyIndex = history.length - 1;
   renderHistory();
 }
@@ -735,7 +1068,7 @@ function loadPreset(name) {
   const Q = QP.makeQuiver();
   let W = new Map();
   const one = QP.fone;
-  if (name === 'empty3') {
+  if (name === '3cycle') {
     const v1 = QP.addVertex(Q, '1', 260, 140), v2 = QP.addVertex(Q, '2', 460, 260), v3 = QP.addVertex(Q, '3', 260, 380);
     const a = QP.addArrow(Q, v1, v2, 'a'), b = QP.addArrow(Q, v2, v3, 'b'), c = QP.addArrow(Q, v3, v1, 'c');
     QP.potAdd(W, [a, b, c], one);
@@ -815,7 +1148,7 @@ function serializeState() {
   return JSON.stringify({
     field: field.kind === 'Fp' ? { kind: 'Fp', p: field.p.toString() } : { kind: 'Q' },
     vertices: [...Q.vertices.values()].map(v => ({ id: v.id, label: v.label, x: v.x, y: v.y })),
-    arrows: [...Q.arrows.values()].map(a => ({ id: a.id, label: a.label, source: a.source, target: a.target })),
+    arrows: [...Q.arrows.values()].map(a => ({ id: a.id, label: QP.labelOf(a), source: a.source, target: a.target })),
     nextVertexId: Q.nextVertexId, nextArrowId: Q.nextArrowId,
     potential: [...state.potential.values()].map(t => ({ word: t.word, coeff: [t.coeff.n.toString(), t.coeff.d.toString()] })),
     maxLen: state.maxLen,
@@ -823,6 +1156,10 @@ function serializeState() {
 }
 function deserializeState(text) {
   const obj = JSON.parse(text);
+  if (!obj || typeof obj !== 'object') throw new Error('not a QP file');
+  if (!Array.isArray(obj.vertices) || !Array.isArray(obj.arrows) || !Array.isArray(obj.potential)) {
+    throw new Error('missing vertices, arrows or potential');
+  }
   // Switch the active field to match the file *before* reconstructing
   // coefficients, so QP.F(...) below interprets the stored {n,d} pairs
   // correctly. Files from before this feature existed have no `field` key
@@ -834,18 +1171,45 @@ function deserializeState(text) {
   } catch (e) {
     fieldWarning = `Could not use the imported field (${e.message}); kept the current one.`;
   }
+  // Nothing in the file is taken on trust: it is ordinary untrusted input,
+  // and every field below is either validated or rebuilt from scratch.
   const Q = QP.makeQuiver();
-  for (const v of obj.vertices) Q.vertices.set(v.id, v);
-  for (const a of obj.arrows) Q.arrows.set(a.id, a);
-  Q.nextVertexId = obj.nextVertexId; Q.nextArrowId = obj.nextArrowId;
+  const isId = (n) => Number.isSafeInteger(n) && n >= 0;
+  let badEntries = 0;
+  for (const v of obj.vertices) {
+    if (!v || !isId(v.id) || Q.vertices.has(v.id)) { badEntries++; continue; }
+    Q.vertices.set(v.id, {
+      id: v.id,
+      label: String(v.label ?? v.id),          // labelOf/escapeHtml assume a string
+      x: Number.isFinite(v.x) ? v.x : 0,
+      y: Number.isFinite(v.y) ? v.y : 0,
+    });
+  }
+  for (const a of obj.arrows) {
+    // An arrow whose endpoints are not in the file is not a quiver arrow;
+    // keeping it would break every source/target lookup downstream.
+    if (!a || !isId(a.id) || Q.arrows.has(a.id) ||
+        !Q.vertices.has(a.source) || !Q.vertices.has(a.target)) { badEntries++; continue; }
+    Q.arrows.set(a.id, { id: a.id, label: String(a.label ?? ('#' + a.id)), source: a.source, target: a.target });
+  }
+  // Never trust the file's own counters: a stale or hostile value hands the
+  // next added vertex/arrow an id that is already in use, which silently
+  // rewrites an existing one instead of creating anything.
+  let maxV = -1; for (const id of Q.vertices.keys()) if (id > maxV) maxV = id;
+  let maxA = -1; for (const id of Q.arrows.keys()) if (id > maxA) maxA = id;
+  Q.nextVertexId = Math.max(isId(obj.nextVertexId) ? obj.nextVertexId : 0, maxV + 1);
+  Q.nextArrowId = Math.max(isId(obj.nextArrowId) ? obj.nextArrowId : 0, maxA + 1);
   const W = new Map();
   let skipped = 0;
   for (const t of obj.potential) {
-    if (!isValidCyclicWord(Q, t.word)) { skipped++; continue; }
+    if (!t || !isValidCyclicWord(Q, t.word)) { skipped++; continue; }
     try { QP.potAdd(W, t.word, QP.F(BigInt(t.coeff[0]), BigInt(t.coeff[1]))); }
     catch (e) { skipped++; }
   }
-  state.quiver = Q; state.potential = W; state.maxLen = obj.maxLen || 8;
+  state.quiver = Q; state.potential = W;
+  // Clamped to the slider's own range, so state.maxLen can never drift from
+  // the value the Settings panel shows.
+  state.maxLen = Math.min(16, Math.max(4, Math.round(Number(obj.maxLen)) || 8));
   state.selection = null; state.termDraft = []; state.arrowDraftSource = null; state.highlightedTermKey = null;
   history = []; historyIndex = -1;
   snapshot('Imported');
@@ -853,6 +1217,7 @@ function deserializeState(text) {
   syncFieldUI();
   fitView();
   renderAll();
+  if (badEntries) addMessage(`Skipped ${badEntries} vertex/arrow entr${badEntries > 1 ? 'ies' : 'y'} with a bad id or missing endpoints.`, 'warn');
   if (skipped) addMessage(`Skipped ${skipped} potential term(s) that weren't closed, composable cycles, or valid in this field.`, 'warn');
   if (fieldWarning) addMessage(fieldWarning, 'warn');
 }
@@ -899,7 +1264,39 @@ const ARROW_BUNDLE_THRESHOLD = 5;
 // Both singles and bundles sharing an unordered vertex pair are fanned out
 // together (same curve-offset scheme as before bundling existed) so they
 // never overlap on screen.
+// Both the arrow geometry and the structural issues below depend only on
+// the ARROW SET — not on where the vertices sit, not on labels, not on the
+// potential. This is the shared constant-time test for "that set changed":
+// mutation, undo/redo, import, presets and Clear all replace the quiver
+// object wholesale, while adding or deleting arrows in place necessarily
+// moves arrows.size or nextArrowId. (Nothing in this app changes an
+// existing arrow's endpoints. If that ever changes, that code must clear
+// both caches below by hand — the stamp will not notice on its own.)
+function quiverCacheHit(cache) {
+  const Q = state.quiver;
+  return !!cache && cache.quiver === Q && cache.size === Q.arrows.size && cache.nextArrowId === Q.nextArrowId;
+}
+function quiverCacheStamp(value) {
+  const Q = state.quiver;
+  return { quiver: Q, size: Q.arrows.size, nextArrowId: Q.nextArrowId, value };
+}
+let geometryCache = null;   // { quiver, size, nextArrowId, value: {geo, bundleGeo} }
+let structCache = null;     // { quiver, size, nextArrowId, value: {loopIds, twoCycleIds, flaggedVertices} }
+
+// Curve offsets for every arrow, and the bundles that several parallel
+// arrows collapse into. Cached because render(), both hit tests and the
+// dblclick handler each ask for it — a chevron click alone rebuilt it three
+// times, and at 40,000 arrows that is 30 ms a rebuild. Vertex positions are
+// deliberately not part of the stamp: this returns curve offsets, and where
+// a curve actually lands is arrowPoints' job, so dragging a vertex needs no
+// recomputation here.
 function computeArrowGeometry() {
+  if (quiverCacheHit(geometryCache)) return geometryCache.value;
+  const value = computeArrowGeometryUncached();
+  geometryCache = quiverCacheStamp(value);
+  return value;
+}
+function computeArrowGeometryUncached() {
   const directed = new Map();
   for (const a of state.quiver.arrows.values()) {
     if (a.source === a.target) continue;
@@ -966,15 +1363,24 @@ function bundleBoxLayout(arrows, curve) {
 // and forwards them here with the same coordinates).
 function hitBundleNav(x, y) {
   const { bundleGeo } = computeArrowGeometry();
+  // Boxes belonging to different vertex pairs can still overlap in a dense
+  // drawing, so pick the one whose centre is nearest the click and, on a
+  // tie, the one drawn last — that is the box on top, and the box on top is
+  // the one the user is aiming at. Returning the first match instead meant
+  // clicks landed on whatever was underneath.
+  let best = null, bestD = Infinity;
   for (const [dKey, bundle] of bundleGeo) {
     const box = bundleBoxLayout(bundle.arrows, bundle.curve);
     if (!box) continue;
     if (x < box.x || x > box.x + box.w || y < box.y || y > box.y + box.h) continue;
-    if (x < box.x + box.chevW) return { dKey, dir: -1, n: bundle.arrows.length };
-    if (x > box.x + box.w - box.chevW) return { dKey, dir: 1, n: bundle.arrows.length };
-    return { dKey, dir: 0, n: bundle.arrows.length };
+    const d = Math.hypot(x - (box.x + box.w / 2), y - (box.y + box.h / 2));
+    if (d <= bestD) { bestD = d; best = { dKey, box, n: bundle.arrows.length }; }
   }
-  return null;
+  if (!best) return null;
+  const { dKey, box, n } = best;
+  if (x < box.x + box.chevW) return { dKey, dir: -1, n };
+  if (x > box.x + box.w - box.chevW) return { dKey, dir: 1, n };
+  return { dKey, dir: 0, n };
 }
 
 function arrowPoints(a, curveOffset) {
@@ -984,7 +1390,14 @@ function arrowPoints(a, curveOffset) {
   const dx = t.x - s.x, dy = t.y - s.y;
   const len = Math.hypot(dx, dy) || 1;
   const ux = dx / len, uy = dy / len;
-  const px = -uy, py = ux; // perpendicular
+  // The perpendicular is taken from the pair's canonical orientation (low
+  // vertex id to high), NOT from this arrow's own direction. Deriving it
+  // from source->target flips it for the reverse arrow, which cancels
+  // against that arrow's opposite curve offset: an i->j bundle and a j->i
+  // bundle were handed offsets -0.5 and +0.5 and landed on exactly the
+  // same arc, one label box hiding the other completely.
+  let px = -uy, py = ux; // perpendicular
+  if (a.source > a.target) { px = -px; py = -py; }
   const bend = curveOffset * 30;
   const mx = (s.x + t.x) / 2 + px * bend, my = (s.y + t.y) / 2 + py * bend;
   // start/end at circle edge, aimed toward the control point for a smooth join
@@ -1092,11 +1505,19 @@ function updateBundleNameOverlay(dKey, arrows, curve, color, seen) {
     wrap.appendChild(el);
     bundleNameEls.set(dKey, el);
   }
+  // Rewrite the text when the NAME changes, not only when the bundle steps
+  // to a different member: Relabel (and renaming a single arrow) gives the
+  // same member a new name, which this box used to keep showing under its
+  // old one. Writing textContent replaces the text node and so drops any
+  // in-progress scroll, which is why it stays guarded — an unchanged name
+  // must not be rewritten on every render.
   const idx = bundleActiveIndex(dKey, arrows.length);
-  if (el.dataset.idx !== String(idx)) {
+  const label = QP.labelOf(arrows[idx]);
+  if (el.dataset.idx !== String(idx) || el.textContent !== label) {
     el.dataset.idx = String(idx);
-    el.textContent = arrows[idx].label;
+    el.textContent = label;
     el.scrollLeft = 0;
+    bundleScroll.set(dKey, 0);
   }
   el.style.left = box.name.left + 'px';
   el.style.top = box.name.top + 'px';
@@ -1104,7 +1525,7 @@ function updateBundleNameOverlay(dKey, arrows, curve, color, seen) {
   el.style.height = box.name.height + 'px';
   el.style.color = color;
 
-  updateBundleThumb(dKey, el, box, color);
+  updateBundleThumb(dKey, el, box, color, label);
 }
 function pruneBundleNameOverlays(seen) {
   for (const [dKey, el] of bundleNameEls) if (!seen.has(dKey)) { el.remove(); bundleNameEls.delete(dKey); }
@@ -1118,12 +1539,34 @@ function pruneBundleNameOverlays(seen) {
 // text, so it can never race with clicking the name to select/erase/
 // term/rename it.
 const BUNDLE_THUMB_MIN_WIDTH = 12;
-function updateBundleThumb(dKey, nameEl, box, color) {
+// The name strip's scroll offset, kept here rather than read back from the
+// element: nameEl.scrollLeft / scrollWidth / clientWidth are all
+// layout-dependent reads, and render() writes to those same elements just
+// before, so each read forced a synchronous layout of the entire page. With
+// a term list of tens of thousands of rows that cost hundreds of
+// milliseconds — per frame of a drag, and per chevron click.
+let bundleScroll = new Map(); // directedKey -> current scrollLeft, in px
+// Width of a bundle label as the strip will render it, measured on the
+// canvas in the same font the stylesheet gives .qp-bundle-name (10px,
+// --qp-mono). A couple of sub-pixels either way only affects the size of a
+// scroll thumb, and it costs no layout at all.
+let bundleLabelFont = null;
+function measureBundleLabel(text) {
+  if (!bundleLabelFont) bundleLabelFont = '10px ' + cssVar('--qp-mono');
+  const prev = ctx.font;
+  ctx.font = bundleLabelFont;
+  const w = ctx.measureText(text).width;
+  ctx.font = prev;
+  return w;
+}
+function updateBundleThumb(dKey, nameEl, box, color, label) {
   const trackW = box.thumbTrack.width;
-  const maxScroll = nameEl.scrollWidth - nameEl.clientWidth;
+  const maxScroll = Math.max(0, measureBundleLabel(label) - box.name.width);
   let t = bundleThumbEls.get(dKey);
   if (maxScroll <= 0) {
     if (t) t.track.style.display = 'none';
+    bundleScroll.set(dKey, 0);
+    nameEl.scrollLeft = 0;
     return;
   }
   if (!t) {
@@ -1131,17 +1574,22 @@ function updateBundleThumb(dKey, nameEl, box, color) {
     track.className = 'qp-bundle-thumb-track';
     const thumb = document.createElement('div');
     thumb.className = 'qp-bundle-thumb';
+    // Both gestures below work from the numbers this function already
+    // computed (t.trackW, t.thumbW, t.left, t.maxScroll) instead of
+    // measuring the DOM, so dragging the thumb forces no layout either.
+    const scrollTo = (left) => {
+      const range = t.trackW - t.thumbW;
+      const clamped = Math.min(range, Math.max(0, left));
+      t.left = clamped;
+      thumb.style.left = clamped + 'px';
+      const s = range > 0 ? t.maxScroll * (clamped / range) : 0;
+      bundleScroll.set(dKey, s);
+      nameEl.scrollLeft = s;
+    };
     thumb.addEventListener('mousedown', (e) => {
       e.preventDefault();
-      const trackRect = track.getBoundingClientRect();
-      const range = trackRect.width - thumb.offsetWidth;
-      const startX = e.clientX, startLeft = thumb.offsetLeft;
-      const onMove = (me) => {
-        const left = Math.min(range, Math.max(0, startLeft + (me.clientX - startX)));
-        thumb.style.left = left + 'px';
-        const maxS = nameEl.scrollWidth - nameEl.clientWidth;
-        nameEl.scrollLeft = range > 0 ? maxS * (left / range) : 0;
-      };
+      const startX = e.clientX, startLeft = t.left;
+      const onMove = (me) => scrollTo(startLeft + (me.clientX - startX));
       const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); thumb.classList.remove('qp-dragging'); };
       thumb.classList.add('qp-dragging');
       window.addEventListener('mousemove', onMove);
@@ -1151,16 +1599,11 @@ function updateBundleThumb(dKey, nameEl, box, color) {
       if (e.target === thumb) return; // handled by the thumb's own listener above
       // Clicking the bare track jumps the thumb there directly (a quick
       // "page" scroll), same as clicking a normal scrollbar's track.
-      const trackRect = track.getBoundingClientRect();
-      const range = trackRect.width - thumb.offsetWidth;
-      const left = Math.min(range, Math.max(0, e.clientX - trackRect.left - thumb.offsetWidth / 2));
-      thumb.style.left = left + 'px';
-      const maxS = nameEl.scrollWidth - nameEl.clientWidth;
-      nameEl.scrollLeft = range > 0 ? maxS * (left / range) : 0;
+      scrollTo(canvasCoords(e).x - t.trackLeft - t.thumbW / 2);
     });
     track.appendChild(thumb);
     wrap.appendChild(track);
-    t = { track, thumb };
+    t = { track, thumb, trackW, thumbW: BUNDLE_THUMB_MIN_WIDTH, left: 0, maxScroll, trackLeft: box.thumbTrack.left };
     bundleThumbEls.set(dKey, t);
   }
   t.track.style.display = '';
@@ -1168,10 +1611,13 @@ function updateBundleThumb(dKey, nameEl, box, color) {
   t.track.style.top = box.thumbTrack.top + 'px';
   t.track.style.width = trackW + 'px';
   t.track.style.height = box.thumbTrack.height + 'px';
-  const thumbW = Math.max(BUNDLE_THUMB_MIN_WIDTH, trackW * (nameEl.clientWidth / nameEl.scrollWidth));
+  const thumbW = Math.max(BUNDLE_THUMB_MIN_WIDTH, trackW * (box.name.width / (maxScroll + box.name.width)));
   t.thumb.style.width = thumbW + 'px';
   const range = trackW - thumbW;
-  t.thumb.style.left = (range > 0 ? range * (nameEl.scrollLeft / maxScroll) : 0) + 'px';
+  const scroll = Math.min(bundleScroll.get(dKey) || 0, maxScroll);
+  const left = range > 0 ? range * (scroll / maxScroll) : 0;
+  t.thumb.style.left = left + 'px';
+  Object.assign(t, { trackW, thumbW, left, maxScroll, trackLeft: box.thumbTrack.left });
 }
 
 function render() {
@@ -1183,7 +1629,7 @@ function render() {
 
   const { geo, bundleGeo } = computeArrowGeometry();
   const termSet = new Set(state.termDraft);
-  const { loopIds, twoCycleIds } = updateStructuralWarning();
+  const { loopIds, twoCycleIds, flaggedVertices } = structuralIssues();
   const highlightedWord = state.highlightedTermKey ? (state.potential.get(state.highlightedTermKey)?.word ?? null) : null;
 
   // arrows
@@ -1219,7 +1665,7 @@ function render() {
     // label
     const mid = quadPoint(p, 0.5);
     ctx.font = '11.5px ' + mono;
-    const label = a.label;
+    const label = QP.labelOf(a);
     const tw = ctx.measureText(label).width;
     ctx.fillStyle = bg;
     ctx.fillRect(mid.x - tw / 2 - 3, mid.y - 8, tw + 6, 15);
@@ -1285,8 +1731,7 @@ function render() {
   for (const v of state.quiver.vertices.values()) {
     const isSel = state.selection && state.selection.type === 'vertex' && state.selection.id === v.id;
     const isArrowSrc = state.mode === 'arrow' && state.arrowDraftSource === v.id;
-    const hasIssue = [...state.quiver.arrows.values()].some(a =>
-      (a.source === v.id || a.target === v.id) && (loopIds.has(a.id) || twoCycleIds.has(a.id)));
+    const hasIssue = flaggedVertices.has(v.id);
     ctx.beginPath();
     ctx.arc(v.x, v.y, VR, 0, Math.PI * 2);
     ctx.fillStyle = isSel || isArrowSrc ? linkSoft : bg;
@@ -1404,8 +1849,17 @@ function addMessage(text, kind) {
   const banner = document.getElementById('banner');
   const div = document.createElement('div');
   div.className = 'qp-msg' + (kind === 'warn' ? ' qp-warn' : '');
-  div.innerHTML = '<span>' + text + '</span><span class="qp-x">✕</span>';
-  div.querySelector('.qp-x').onclick = () => div.remove();
+  // Built as DOM rather than written as innerHTML: `text` routinely carries
+  // arrow and vertex labels, which come from imported JSON and so are
+  // untrusted. textContent cannot be talked into parsing markup, whereas an
+  // escape call here is one forgetful edit away from being dropped again.
+  const body = document.createElement('span');
+  body.textContent = text;
+  const x = document.createElement('span');
+  x.className = 'qp-x';
+  x.textContent = '✕';
+  x.onclick = () => div.remove();
+  div.append(body, x);
   banner.appendChild(div);
   if (!kind || kind === 'ok') setTimeout(() => div.remove(), 6000);
 }
@@ -1527,23 +1981,54 @@ function showExportModal(jsonText) {
 }
 
 /* ---- loops / 2-cycles: flagged live, not just right after a mutation ---- */
+// Bucketed by directed vertex pair rather than compared arrow-by-arrow: an
+// arrow i->j lies in a 2-cycle exactly when at least one arrow j->i exists,
+// so a single pass that groups the arrows answers it for all of them at
+// once. The old pairwise scan was quadratic, which at tens of thousands of
+// arrows (a few mutations is enough) cost seconds — and render() runs this
+// on every frame of a vertex drag.
+//
+// `flaggedVertices` is computed here too, for the same reason: the vertex
+// loop in render() used to rescan every arrow once per vertex to decide
+// whether to draw the vertex in red.
 function getStructuralIssues(quiver) {
-  const arrows = [...quiver.arrows.values()];
-  const loopIds = new Set(arrows.filter(a => a.source === a.target).map(a => a.id));
-  const twoCycleIds = new Set();
-  for (let i = 0; i < arrows.length; i++) {
-    const a = arrows[i];
-    if (a.source === a.target) continue;
-    for (let j = i + 1; j < arrows.length; j++) {
-      const b = arrows[j];
-      if (a.source === b.target && a.target === b.source) { twoCycleIds.add(a.id); twoCycleIds.add(b.id); }
-    }
+  const loopIds = new Set(), twoCycleIds = new Set(), flaggedVertices = new Set();
+  const byDir = new Map(); // "source,target" -> [arrow ids]
+  for (const a of quiver.arrows.values()) {
+    if (a.source === a.target) { loopIds.add(a.id); flaggedVertices.add(a.source); continue; }
+    const key = a.source + ',' + a.target;
+    let bucket = byDir.get(key);
+    if (!bucket) { bucket = []; byDir.set(key, bucket); }
+    bucket.push(a.id);
   }
-  return { loopIds, twoCycleIds };
+  for (const [key, ids] of byDir) {
+    const comma = key.indexOf(',');
+    const src = key.slice(0, comma), tgt = key.slice(comma + 1);
+    if (!byDir.has(tgt + ',' + src)) continue;
+    for (const id of ids) twoCycleIds.add(id);
+    flaggedVertices.add(+src); flaggedVertices.add(+tgt);
+  }
+  return { loopIds, twoCycleIds, flaggedVertices };
 }
+
+// Which arrows are flagged depends only on each arrow's (source, target), so
+// the answer survives everything else the app does: moving a vertex,
+// renaming anything, adding or removing a potential term, switching the
+// coefficient field. Recomputed only when the arrow set changes, on the
+// shared stamp defined above.
+function structuralIssues() {
+  if (quiverCacheHit(structCache)) return structCache.value;
+  const issues = getStructuralIssues(state.quiver);
+  structCache = quiverCacheStamp(issues);
+  // The banner is DOM work — an innerHTML write and a fresh handler — so it
+  // is refreshed here, on an actual change, rather than once per frame.
+  updateStructuralWarning(issues);
+  return issues;
+}
+
 let structWarnDismissedKey = null;
-function updateStructuralWarning() {
-  const { loopIds, twoCycleIds } = getStructuralIssues(state.quiver);
+function updateStructuralWarning(issues) {
+  const { loopIds, twoCycleIds } = issues;
   const pairs = twoCycleIds.size / 2;
   const el = document.getElementById('structWarn');
   const row = document.getElementById('statIssueRow');
@@ -1552,11 +2037,19 @@ function updateStructuralWarning() {
     structWarnDismissedKey = null;
     if (el) el.style.display = 'none';
     if (row) row.style.display = 'none';
-    return { loopIds, twoCycleIds };
+    return;
   }
   const parts = [];
   if (loopIds.size) parts.push(loopIds.size + ' loop' + (loopIds.size > 1 ? 's' : ''));
   if (pairs) parts.push(pairs + ' two-cycle' + (pairs > 1 ? 's' : ''));
+  // The two conditions are not the same rule and must not be stated as one:
+  // a loop anywhere blocks mutation outright (mutateQP rejects it), while a
+  // 2-cycle only matters at the vertex being mutated — one away from it is
+  // reduced away by the splitting step.
+  const rules = [];
+  if (loopIds.size) rules.push('needs a loop-free quiver');
+  if (pairs) rules.push('cannot be run at a vertex incident to a two-cycle');
+  const why = 'QP mutation ' + rules.join(', and ') + '.';
   // Key identifies exactly which arrows are currently flagged, so dismissing
   // this set re-shows the banner as soon as the set of issues changes
   // (e.g. a new loop/2-cycle appears) rather than staying hidden forever.
@@ -1566,13 +2059,18 @@ function updateStructuralWarning() {
       el.style.display = 'none';
     } else {
       el.style.display = 'flex';
-      el.innerHTML = '<span>' + parts.join(' and ') + ' present, shown in red — QP mutation needs a loop-free, 2-cycle-free quiver at the vertex you mutate.</span><span class="qp-x">✕</span>';
-      el.querySelector('.qp-x').onclick = () => { structWarnDismissedKey = key; el.style.display = 'none'; };
+      el.textContent = '';
+      const body = document.createElement('span');
+      body.textContent = parts.join(' and ') + ' present, shown in red — ' + why;
+      const x = document.createElement('span');
+      x.className = 'qp-x';
+      x.textContent = '✕';
+      x.onclick = () => { structWarnDismissedKey = key; el.style.display = 'none'; };
+      el.append(body, x);
     }
   }
   if (row) row.style.display = '';
   if (count) count.textContent = parts.join(', ');
-  return { loopIds, twoCycleIds };
 }
 
 canvas.addEventListener('mousemove', (e) => {
@@ -1607,7 +2105,24 @@ window.addEventListener('mouseup', () => {
 canvas.addEventListener('click', (e) => {
   const p = canvasCoords(e);
   const nav = hitBundleNav(p.x, p.y);
-  if (nav && nav.dir !== 0) { stepBundle(nav.dKey, nav.dir, nav.n); render(); return; }
+  if (nav && nav.dir !== 0) {
+    stepBundle(nav.dKey, nav.dir, nav.n);
+    // The selection is pinned to one arrow id, so a bundle whose displayed
+    // member is the selected one has to carry the selection along as it
+    // steps. Without this the inspector keeps describing whichever member
+    // was on display when it was picked — and since a click on the bundle
+    // selects the member on display, only the first arrow of a bundle could
+    // ever be inspected, renamed or deleted.
+    const bundle = computeArrowGeometry().bundleGeo.get(nav.dKey);
+    if (bundle && state.selection && state.selection.type === 'arrow' &&
+        bundle.arrows.some(m => m.id === state.selection.id)) {
+      const shown = bundle.arrows[bundleActiveIndex(nav.dKey, bundle.arrows.length)];
+      state.selection = { type: 'arrow', id: shown.id };
+      renderInspector();
+    }
+    render();
+    return;
+  }
   if (state.mode !== 'select') clearTermHighlight();
   if (state.mode === 'vertex') {
     const v = hitVertex(p.x, p.y);
@@ -1624,7 +2139,7 @@ canvas.addEventListener('click', (e) => {
         if (v.id === state.arrowDraftSource) { addMessage('Loops are not supported (QP mutation requires loop-free quivers).', 'warn'); }
         else {
           const id = QP.addArrow(state.quiver, state.arrowDraftSource, v.id);
-          snapshot('Add arrow ' + state.quiver.arrows.get(id).label);
+          snapshot('Add arrow ' + QP.labelOf(state.quiver.arrows.get(id)));
         }
       }
       state.arrowDraftSource = null; updateHint(); render(); renderStats();
@@ -1660,7 +2175,7 @@ canvas.addEventListener('click', (e) => {
     if (a) {
       state.quiver.arrows.delete(a.id);
       pruneTermsReferencingMissingArrows();
-      snapshot('Delete arrow ' + a.label);
+      snapshot('Delete arrow ' + QP.labelOf(a));
       state.selection = null; renderInspector(); render(); renderStats(); renderTerms();
     }
   }
@@ -1673,7 +2188,7 @@ canvas.addEventListener('dblclick', (e) => {
   const v = hitVertex(p.x, p.y);
   if (v) { showRename('Rename vertex', v.label, (nv) => { v.label = nv; snapshot('Rename vertex'); render(); renderInspector(); }); return; }
   const a = hitArrow(p.x, p.y);
-  if (a) { showRename('Rename arrow', a.label, (na) => { a.label = na; snapshot('Rename arrow'); render(); renderInspector(); renderTerms(); }); }
+  if (a) { showRename('Rename arrow', QP.labelOf(a), (na) => { a.label = na; a.labelDef = undefined; snapshot('Rename arrow'); render(); renderInspector(); renderTerms(); }); }
 });
 
 window.addEventListener('keydown', (e) => {
@@ -1702,7 +2217,7 @@ function relabelAll() {
   const vs = [...state.quiver.vertices.values()].sort((x, y) => x.id - y.id);
   vs.forEach((v, i) => { v.label = String(i + 1); });
   const as = [...state.quiver.arrows.values()].sort((x, y) => x.id - y.id);
-  as.forEach((a, i) => { a.label = 'a' + (i + 1); });
+  as.forEach((a, i) => { a.label = 'a' + (i + 1); a.labelDef = undefined; });
   state.highlightedTermKey = null;
   snapshot('Relabel');
   render(); renderInspector(); renderTerms(); renderDraftBar();
@@ -1712,17 +2227,199 @@ function relabelAll() {
 function doUndo() { if (historyIndex > 0) restoreSnapshot(historyIndex - 1); }
 function doRedo() { if (historyIndex < history.length - 1) restoreSnapshot(historyIndex + 1); }
 
-function doMutate(vertexId) {
-  const v = state.quiver.vertices.get(vertexId);
+/* ======================================================================
+   PART 4b — running a mutation off the main thread
+
+   Mutation is a pure function of (quiver, potential, k, maxLen), so it can
+   run in a Web Worker with nothing shared but the message payload. That
+   does not make it faster — the state has to be structured-cloned in both
+   directions, which costs roughly a third of the round trip — so it is used
+   only above WORKER_MIN_ARROWS, where a mutation takes long enough that a
+   frozen tab is the real problem. Below that it runs inline, as before.
+
+   That threshold is measured against the size of the quiver the mutation
+   PRODUCES, not the one it is handed. Cost is driven by the premutation's
+   composite arrows, one per (arrow into k, arrow out of k) pair, so the
+   output can dwarf the input: a 3-vertex quiver carrying three parallel
+   arrows on each edge grows 3 -> 12 -> 24 -> 108 -> 1401 -> 114384 arrows,
+   and the 1401-arrow step — far below any input-side threshold — is the one
+   that freezes the tab for seconds. predictedArrowCount() works the figure
+   out in one pass, before any of that work is done.
+
+   What it buys at that size: the page stays alive, the mutation can be
+   cancelled (terminating the worker is the only way to stop it — there is
+   no cooperative abort without SharedArrayBuffer), and a mutation that
+   exhausts memory kills the worker instead of the tab.
+
+   The worker is built from a Blob URL rather than a separate .js file so
+   that it works when this page is opened straight off disk (file://),
+   where a worker script fetched by relative URL would not load. If the
+   Worker cannot be created at all — or fails once running — the mutation
+   falls back to the main thread, which is slow but always correct.
+   ====================================================================== */
+const WORKER_MIN_ARROWS = 35000;
+
+// Exactly the arrow count mutateQP() is about to build: one composite per
+// (incoming, outgoing) pair, one reversal per arrow at k, and every arrow
+// not touching k carried over. Counted without allocating any of them.
+// This is the premutation's count, and the reduction only ever deletes
+// arrows from it, so it also bounds the final quiver.
+function predictedArrowCount(quiver, k) {
+  let incoming = 0, outgoing = 0, untouched = 0;
+  for (const a of quiver.arrows.values()) {
+    if (a.target === k) incoming++;
+    else if (a.source === k) outgoing++;
+    else untouched++;
+  }
+  return incoming * outgoing + incoming + outgoing + untouched;
+}
+
+// Runs INSIDE the worker; never called here. It is stringified into the
+// worker source alongside QPEngine, so it may only use what that source
+// defines plus the worker's own globals.
+function qpWorkerMain() {
+  const QP = QPEngine();
+  self.onmessage = (e) => {
+    const { id, field, quiver, potential, k, maxLen } = e.data;
+    try {
+      QP.setField(field && field.kind === 'Fp' ? QP.makePrimeField(BigInt(field.p)) : QP.RationalField);
+      const res = QP.mutateQP(quiver, potential, k, maxLen, (stage) => self.postMessage({ id, stage }));
+      self.postMessage({ id, quiver: res.quiver, potential: res.potential, warnings: res.warnings });
+    } catch (err) {
+      self.postMessage({ id, error: (err && err.message) || String(err) });
+    }
+  };
+}
+function makeWorkerSource() {
+  return QPEngine.toString() + '\n' + qpWorkerMain.toString() + '\nqpWorkerMain();\n';
+}
+
+let qpWorker = null;            // the live Worker, or null if not started
+let qpWorkerUrl = null;         // Blob URL it is built from, reused across restarts
+let qpWorkerUnavailable = false;// creation or startup failed; stop trying
+let qpRequestId = 0;
+let qpPending = null;           // { id, vertexId, label, progress } while a mutation is in flight
+
+function getWorker() {
+  if (qpWorker) return qpWorker;
+  if (qpWorkerUnavailable || typeof Worker === 'undefined') return null;
   try {
-    const res = QP.mutateQP(state.quiver, state.potential, vertexId, state.maxLen);
-    state.quiver = res.quiver; state.potential = res.potential;
-    state.selection = null; state.termDraft = []; state.arrowDraftSource = null; state.highlightedTermKey = null;
-    snapshot('Mutate at ' + v.label);
-    for (const w of res.warnings) addMessage(w, 'warn');
-    renderAll();
+    if (!qpWorkerUrl) qpWorkerUrl = URL.createObjectURL(new Blob([makeWorkerSource()], { type: 'text/javascript' }));
+    const w = new Worker(qpWorkerUrl);
+    w.onmessage = onWorkerMessage;
+    // A Blob worker can be refused after construction (a strict CSP, say).
+    // Treat that like never having had one: drop back to the main thread
+    // and finish the mutation the user asked for.
+    w.onerror = (ev) => {
+      if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+      qpWorkerUnavailable = true;
+      if (qpWorker) { qpWorker.terminate(); qpWorker = null; }
+      const pending = qpPending;
+      qpPending = null;
+      closeMutationProgress();
+      if (pending) {
+        addMessage('Background mutation was not available here; running it on the page instead — it may freeze for a while.', 'warn');
+        mutateInline(pending.vertexId);
+      }
+    };
+    qpWorker = w;
+    return w;
+  } catch (e) {
+    qpWorkerUnavailable = true;
+    return null;
+  }
+}
+function fieldDescriptor() {
+  const f = QP.getField();
+  return f.kind === 'Fp' ? { kind: 'Fp', p: f.p.toString() } : { kind: 'Q' };
+}
+function onWorkerMessage(e) {
+  const msg = e.data;
+  // Ignore anything that is not the answer to the request now outstanding:
+  // a cancelled mutation's worker may still be draining messages.
+  if (!qpPending || msg.id !== qpPending.id) return;
+  if (msg.stage) { qpPending.progress(msg.stage); return; }
+  const pending = qpPending;
+  qpPending = null;
+  closeMutationProgress();
+  if (msg.error) { addMessage('Could not mutate: ' + msg.error, 'warn'); return; }
+  applyMutation({ quiver: msg.quiver, potential: msg.potential, warnings: msg.warnings }, pending.label);
+}
+function cancelMutation() {
+  if (!qpPending) return;
+  qpPending = null;
+  if (qpWorker) { qpWorker.terminate(); qpWorker = null; } // restarted on demand from the same Blob URL
+  closeMutationProgress();
+  addMessage('Mutation cancelled.', 'warn');
+}
+
+// A modal progress panel reusing the existing dialog, with Cancel as its
+// only action — it also serves as the lock that keeps the quiver from being
+// edited while a mutation is computed against it.
+function showMutationProgress(vertexLabel, onCancel) {
+  const overlay = document.getElementById('modalOverlay');
+  const okBtn = document.getElementById('modalOk');
+  const cancelBtn = document.getElementById('modalCancel');
+  const msgEl = document.getElementById('modalMsg');
+  document.getElementById('modalTitle').textContent = 'Mutating at vertex ' + vertexLabel + '…';
+  msgEl.textContent = 'Starting…';
+  msgEl.style.display = '';
+  document.getElementById('modalInput').style.display = 'none';
+  okBtn.style.display = 'none';
+  cancelBtn.textContent = 'Cancel';
+  overlay.classList.add('qp-open');
+  const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+  cancelBtn.onclick = onCancel;
+  window.addEventListener('keydown', onKey, true);
+  closeMutationProgress.cleanup = () => {
+    window.removeEventListener('keydown', onKey, true);
+    cancelBtn.onclick = null;
+    cancelBtn.textContent = 'Cancel';
+    okBtn.style.display = '';
+    overlay.classList.remove('qp-open');
+  };
+  return (stage) => { msgEl.textContent = stage; };
+}
+function closeMutationProgress() {
+  if (closeMutationProgress.cleanup) { closeMutationProgress.cleanup(); closeMutationProgress.cleanup = null; }
+}
+
+// Shared tail of both paths: adopt the result, record it, redraw.
+function applyMutation(res, vertexLabel) {
+  state.quiver = res.quiver; state.potential = res.potential;
+  state.selection = null; state.termDraft = []; state.arrowDraftSource = null; state.highlightedTermKey = null;
+  snapshot('Mutate at ' + vertexLabel);
+  for (const w of res.warnings) addMessage(w, 'warn');
+  renderAll();
+}
+function mutateInline(vertexId) {
+  const v = state.quiver.vertices.get(vertexId);
+  if (!v) return;
+  try {
+    applyMutation(QP.mutateQP(state.quiver, state.potential, vertexId, state.maxLen), v.label);
   } catch (err) {
     addMessage('Could not mutate: ' + err.message, 'warn');
+  }
+}
+
+function doMutate(vertexId) {
+  const v = state.quiver.vertices.get(vertexId);
+  if (!v || qpPending) return; // one mutation at a time; the panel blocks the rest
+  if (predictedArrowCount(state.quiver, vertexId) < WORKER_MIN_ARROWS) { mutateInline(vertexId); return; }
+  const worker = getWorker();
+  if (!worker) { mutateInline(vertexId); return; }
+  const id = ++qpRequestId;
+  const progress = showMutationProgress(v.label, cancelMutation);
+  qpPending = { id, vertexId, label: v.label, progress };
+  try {
+    worker.postMessage({ id, field: fieldDescriptor(), quiver: state.quiver,
+                         potential: state.potential, k: vertexId, maxLen: state.maxLen });
+  } catch (err) {
+    // The state could not be handed over (nothing in it should resist a
+    // structured clone, but if that ever changes, still do the mutation).
+    qpPending = null;
+    closeMutationProgress();
+    mutateInline(vertexId);
   }
 }
 
@@ -1736,7 +2433,7 @@ function renderStats() {
 function wordHTML(word) {
   return word.map(id => {
     const a = state.quiver.arrows.get(id);
-    return '<span>' + (a ? escapeHtml(a.label) : '?') + '</span>';
+    return '<span>' + (a ? escapeHtml(QP.labelOf(a)) : '?') + '</span>';
   }).join('<span class="qp-sep">·</span>');
 }
 function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -1842,14 +2539,14 @@ function renderInspector() {
     const s = state.quiver.vertices.get(a.source), t = state.quiver.vertices.get(a.target);
     body.innerHTML = `
       <div class="qp-inspector-row"><span class="qp-k">Type</span><span class="qp-v">arrow</span></div>
-      <div class="qp-inspector-row"><span class="qp-k">Label</span><span class="qp-v">${escapeHtml(a.label)}</span></div>
+      <div class="qp-inspector-row"><span class="qp-k">Label</span><span class="qp-v">${escapeHtml(QP.labelOf(a))}</span></div>
       <div class="qp-inspector-row"><span class="qp-k">Source → target</span><span class="qp-v">${escapeHtml(s?.label ?? '?')} → ${escapeHtml(t?.label ?? '?')}</span></div>
       <div class="qp-row qp-inspector-actions" style="margin-top:8px">
         <button class="nav-button" id="renameA">Rename</button>
         <button class="nav-button qp-danger" id="deleteA">Delete</button>
       </div>`;
-    document.getElementById('renameA').onclick = () => showRename('Rename arrow', a.label, (na) => { a.label = na; snapshot('Rename arrow'); render(); renderInspector(); renderTerms(); });
-    document.getElementById('deleteA').onclick = () => { state.quiver.arrows.delete(a.id); pruneTermsReferencingMissingArrows(); snapshot('Delete arrow ' + a.label); state.selection = null; renderInspector(); render(); renderStats(); renderTerms(); };
+    document.getElementById('renameA').onclick = () => showRename('Rename arrow', QP.labelOf(a), (na) => { a.label = na; a.labelDef = undefined; snapshot('Rename arrow'); render(); renderInspector(); renderTerms(); });
+    document.getElementById('deleteA').onclick = () => { state.quiver.arrows.delete(a.id); pruneTermsReferencingMissingArrows(); snapshot('Delete arrow ' + QP.labelOf(a)); state.selection = null; renderInspector(); render(); renderStats(); renderTerms(); };
   }
 }
 
@@ -1998,7 +2695,7 @@ document.getElementById('importFile').addEventListener('change', (e) => {
 /* ======================================================================
    PART 7 — boot
    ====================================================================== */
-loadPreset('empty3');
+loadPreset('3cycle');
 syncFieldUI();
 // Browsers sometimes restore a form control's live value across a reload
 // (independent of the HTML `value` attribute), so without this the max
