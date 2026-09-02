@@ -368,6 +368,26 @@ function QPEngine() {
     // the untouched-term path below reuse a key instead of recomputing it.
     const out = new Map();
     const buf = [];
+    // Shortest replacement of each substituted arrow, computed once for the
+    // whole call rather than per term (a substitution set can hold thousands
+    // of paths, so rescanning it per position was itself significant). An
+    // arrow with no substitution stands for itself, so it counts 1; an arrow
+    // substituted by nothing counts 0, because such a term produces no words
+    // at all and that is not a length-cap drop.
+    const minLenCache = new Map();
+    const minLen = (id) => {
+      let m = minLenCache.get(id);
+      if (m !== undefined) return m;
+      const s = substitutions.get(id);
+      m = 1;
+      if (s) {
+        m = Infinity;
+        for (const x of s) if (x.path.length < m) m = x.path.length;
+        if (m === Infinity) m = 0;
+      }
+      minLenCache.set(id, m);
+      return m;
+    };
     const merge = (key, word, c) => {
       const existing = out.get(key);
       const nc = existing ? fadd(existing.coeff, c) : c;
@@ -388,12 +408,32 @@ function QPEngine() {
         continue;
       }
       const n = word.length;
+      // minRest[i] is the shortest the rest of the word can possibly become
+      // from position i onwards. A branch whose length already exceeds the
+      // cap once that minimum is added cannot finish under the cap, so it is
+      // never entered — which is the whole game in the splitting rounds,
+      // where phi(gamma) = gamma - v expands each occurrence into as many
+      // ways as v has paths and the vast majority of the resulting words are
+      // over-length. Without this, those words were built and then thrown
+      // away: on a real 8-vertex quiver at maxLen 16, 96% of the expansion
+      // was discarded and one substitution took 89 seconds.
+      const minRest = new Array(n + 1);
+      minRest[n] = 0;
+      for (let i = n - 1; i >= 0; i--) minRest[i] = minRest[i + 1] + minLen(word[i]);
       const walk = (i, len, c) => {
         if (len > maxLen) { if (truncated) truncated.value = true; return; }
         if (i === n) { potAdd(out, buf.slice(0, len), c); return; }
         const subs = substitutions.get(word[i]);
         if (!subs) { buf[len] = word[i]; walk(i + 1, len + 1, c); return; }
+        const room = maxLen - len - minRest[i + 1];
         for (const { path, coeff: pc } of subs) {
+          // Skipped rather than descended into: the words this branch would
+          // reach are exactly the over-length ones the walk used to build
+          // and drop, so the drop is still reported. The paths are visited
+          // in their original order (sorting them by length would prune a
+          // little harder, but it changes the order words are produced, and
+          // with it the order of the resulting potential).
+          if (path.length > room) { if (truncated) truncated.value = true; continue; }
           for (let j = 0; j < path.length; j++) buf[len + j] = path[j];
           walk(i + 1, len + path.length, fmul(c, pc));
         }
@@ -757,7 +797,7 @@ function QPEngine() {
       return result;
     }
 
-    report('Rewriting ' + potential.size + ' potential term' + (potential.size > 1 ? 's' : ''));
+    report('Rewriting ' + potential.size + ' potential term' + (potential.size != 1 ? 's' : ''));
     const bracketed = new Map();
     for (const { word, coeff } of potential.values()) { const bw = bracketWord(word); if (bw) potAdd(bracketed, bw, coeff); }
     const deltaW = new Map();
@@ -823,7 +863,7 @@ function QPEngine() {
         const MAX_SPLIT_ROUNDS = maxLen + 6;
         let round = 0;
         for (;;) {
-          report('Splitting ' + pairs.length + ' two-cycle pair' + (pairs.length > 1 ? 's' : '') + ', round ' + (round + 1));
+          report('Splitting ' + pairs.length + ' two-cycle pair' + (pairs.length != 1 ? 's' : '') + ', round ' + (round + 1));
           const { u, v } = splitByPriority(current, pairs, priorityOf, roleOf);
           const converged = pairs.every((_, idx) => u[idx].size === 0 && v[idx].size === 0);
           if (converged) break;
@@ -886,7 +926,7 @@ function QPEngine() {
       const back = dirCount.get(tgt + ',' + src);
       if (back) residual2Cycles += n * back;
     }
-    if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle` + (residual2Cycles > 1 ? 's' : '') + ' (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate.');
+    if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle` + (residual2Cycles != 1 ? 's' : '') + ' (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate.');
 
     const newQuiver = { vertices: quiver.vertices, arrows, nextVertexId: quiver.nextVertexId, nextArrowId: nextId };
     // Dedupe as a safety net — every message above is pushed from exactly
@@ -1135,7 +1175,7 @@ function loadPreset(name) {
   state.quiver = Q; state.potential = W; state.selection = null; state.termDraft = []; state.arrowDraftSource = null; state.highlightedTermKey = null;
   history = []; historyIndex = -1;
   snapshot('Preset: ' + (name || 'empty'));
-  if (badTerms.length) addMessage(`Discarded ${badTerms.length} malformed potential term` + (badTerms.length > 1 ? 's' : '') + ' from this preset (internal bug — please report).', 'warn');
+  if (badTerms.length) addMessage(`Discarded ${badTerms.length} malformed potential term` + (badTerms.length != 1 ? 's' : '') + ' from this preset (internal bug — please report).', 'warn');
   // The Markov triangle's lowest vertices would otherwise sit under the
   // bottom-left hint box, so pull it up above the canvas's vertical middle.
   fitView(name === 'markov' ? 0.4 : 0.5);
@@ -1217,8 +1257,8 @@ function deserializeState(text) {
   syncFieldUI();
   fitView();
   renderAll();
-  if (badEntries) addMessage(`Skipped ${badEntries} vertex/arrow entr${badEntries > 1 ? 'ies' : 'y'} with a bad id or missing endpoints.`, 'warn');
-  if (skipped) addMessage(`Skipped ${skipped} potential term` + (skipped > 1 ? 's' : '') + ` that weren't closed, composable cycles, or valid in this field.`, 'warn');
+  if (badEntries) addMessage(`Skipped ${badEntries} vertex/arrow entr${badEntries != 1 ? 'ies' : 'y'} with a bad id or missing endpoints.`, 'warn');
+  if (skipped) addMessage(`Skipped ${skipped} potential term` + (skipped != 1 ? 's' : '') + ` that weren't closed, composable cycles, or valid in this field.`, 'warn');
   if (fieldWarning) addMessage(fieldWarning, 'warn');
 }
 
@@ -2040,8 +2080,8 @@ function updateStructuralWarning(issues) {
     return;
   }
   const parts = [];
-  if (loopIds.size) parts.push(loopIds.size + ' loop' + (loopIds.size > 1 ? 's' : ''));
-  if (pairs) parts.push(pairs + ' two-cycle' + (pairs > 1 ? 's' : ''));
+  if (loopIds.size) parts.push(loopIds.size + ' loop' + (loopIds.size != 1 ? 's' : ''));
+  if (pairs) parts.push(pairs + ' two-cycle' + (pairs != 1 ? 's' : ''));
   // The two conditions are not the same rule and must not be stated as one:
   // a loop anywhere blocks mutation outright (mutateQP rejects it), while a
   // 2-cycle only matters at the vertex being mutated — one away from it is
@@ -2629,7 +2669,7 @@ function applyFieldSwitch(target) {
   snapshot('Switch field to ' + (target.kind === 'Q' ? 'Q' : ('F_' + target.p)));
   syncFieldUI();
   renderAll();
-  if (dropped) addMessage(`${dropped} potential term` + (dropped > 1 ? 's' : '') + ` dropped — their denominator wasn't invertible in the new field.`, 'warn');
+  if (dropped) addMessage(`${dropped} potential term` + (dropped != 1 ? 's' : '') + ` dropped — their denominator wasn't invertible in the new field.`, 'warn');
   else addMessage('Switched coefficient field.', 'ok');
 }
 
