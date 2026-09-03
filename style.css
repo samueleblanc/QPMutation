@@ -499,6 +499,14 @@ button.nav-button:focus-visible {
 .qp-row { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
 
 .qp-term-list { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;}
+/* Past a few hundred terms the list keeps only the rows in view in the
+   document (see renderTermWindow in app.js): the container becomes the
+   scroll frame, a spacer carries the full scroll height, and each visible
+   row is placed at its own offset. One DOM row per term meant the browser
+   re-laid out tens of thousands of them on every layout of the page. */
+.qp-term-list.qp-virtual { display: block; position: relative; }
+.qp-term-list.qp-virtual .qp-term { position: absolute; left: 0; right: 0; }
+.qp-term-spacer { width: 1px; }
 .qp-term {
     display: flex; align-items: center; gap: 8px;
     border: 1px solid var(--qp-border);

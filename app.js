@@ -1088,7 +1088,7 @@ function snapshot(label) {
     history.shift();
   }
   historyIndex = history.length - 1;
-  renderHistory();
+  scheduleHistoryRender();
 }
 function restoreSnapshot(i) {
   if (i < 0 || i >= history.length) return;
@@ -2478,30 +2478,122 @@ function wordHTML(word) {
 }
 function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+// Above this many terms the list stops putting one DOM row per term in the
+// document and shows only the rows the panel can display, with a spacer
+// holding the full scroll height. A mutated potential can run to tens of
+// thousands of terms, and the browser had to lay every one of those rows out
+// on every layout of the page — which is what made dragging a vertex,
+// stepping a bundle and finishing a mutation slow all at once. Below the
+// threshold the plain list is kept: it costs nothing and avoids the
+// fixed-row-height assumption the windowed path relies on.
+const VIRTUAL_TERM_ROWS = 200;
+const TERM_OVERSCAN = 6;
+let termArray = [];            // the potential's terms, in order, for indexing
+let termRowPool = [];          // row elements reused across scrolls
+let termSpacer = null;
+let termStride = 0;            // row height + the stylesheet's 4px gap
+let termVirtual = false;
+let termScrollBound = false;
+let termScrollQueued = false;
+let termListPotential = null;  // which potential object the list is showing
+
+function makeTermRow() {
+  const row = document.createElement('div');
+  row.className = 'qp-term';
+  row.title = 'Click to highlight this cycle in the drawing';
+  const coeff = document.createElement('span'); coeff.className = 'qp-coeff';
+  const word = document.createElement('span'); word.className = 'qp-word';
+  const rm = document.createElement('button'); rm.className = 'qp-rm'; rm.textContent = '✕';
+  row.append(coeff, word, rm);
+  return row;
+}
+// `top` is null in the plain list, where rows are ordinary flex items.
+function fillTermRow(row, t, top) {
+  const key = keyForTerm(t);
+  row.className = 'qp-term' + (state.highlightedTermKey === key ? ' qp-highlighted' : '');
+  if (top !== null) row.style.top = top + 'px';
+  row.children[0].textContent = QP.fToString(t.coeff);
+  row.children[1].innerHTML = wordHTML(t.word);
+  row.children[2].onclick = (e) => { e.stopPropagation(); QP_removeTerm(t); };
+  row.onclick = () => {
+    state.highlightedTermKey = (state.highlightedTermKey === key) ? null : key;
+    renderTerms();
+    render();
+  };
+}
+// Measured once from a real row rather than assumed, so it follows the
+// stylesheet's padding and font size.
+function termRowStride(list) {
+  if (termStride) return termStride;
+  const probe = makeTermRow();
+  probe.style.visibility = 'hidden';
+  probe.children[0].textContent = '1';
+  probe.children[1].innerHTML = '<span>a</span>';
+  list.appendChild(probe);
+  termStride = probe.offsetHeight + 4;
+  probe.remove();
+  if (!termStride || termStride < 8) termStride = 30; // never fall through to 0
+  return termStride;
+}
+function renderTermWindow(list) {
+  const stride = termRowStride(list);
+  const total = termArray.length;
+  termSpacer.style.height = Math.max(0, total * stride - 4) + 'px';
+  const first = Math.max(0, Math.floor(list.scrollTop / stride) - TERM_OVERSCAN);
+  const fit = Math.ceil((list.clientHeight || 200) / stride) + 2 * TERM_OVERSCAN + 1;
+  const last = Math.min(total, first + fit);
+  for (let slot = 0; slot < last - first; slot++) {
+    let row = termRowPool[slot];
+    if (!row) { row = makeTermRow(); termRowPool[slot] = row; list.appendChild(row); }
+    fillTermRow(row, termArray[first + slot], (first + slot) * stride);
+    row.style.display = '';
+  }
+  for (let slot = Math.max(0, last - first); slot < termRowPool.length; slot++) termRowPool[slot].style.display = 'none';
+}
+function onTermListScroll() {
+  if (termScrollQueued) return;
+  termScrollQueued = true;
+  requestAnimationFrame(() => {
+    termScrollQueued = false;
+    if (termVirtual) renderTermWindow(document.getElementById('termList'));
+  });
+}
 function renderTerms() {
   const list = document.getElementById('termList');
   const empty = document.getElementById('termEmpty');
-  const terms = [...state.potential.values()];
-  document.getElementById('termCount').textContent = terms.length;
-  empty.style.display = terms.length ? 'none' : '';
-  list.innerHTML = '';
-  for (const t of terms) {
-    const key = keyForTerm(t);
-    const row = document.createElement('div');
-    row.className = 'qp-term' + (state.highlightedTermKey === key ? ' qp-highlighted' : '');
-    const coeff = document.createElement('span'); coeff.className = 'qp-coeff'; coeff.textContent = QP.fToString(t.coeff);
-    const word = document.createElement('span'); word.className = 'qp-word'; word.innerHTML = wordHTML(t.word);
-    const rm = document.createElement('button'); rm.className = 'qp-rm'; rm.textContent = '✕';
-    rm.onclick = (e) => { e.stopPropagation(); QP_removeTerm(t); };
-    row.title = 'Click to highlight this cycle in the drawing';
-    row.onclick = () => {
-      state.highlightedTermKey = (state.highlightedTermKey === key) ? null : key;
-      renderTerms();
-      render();
-    };
-    row.append(coeff, word, rm);
-    list.appendChild(row);
+  termArray = [...state.potential.values()];
+  document.getElementById('termCount').textContent = termArray.length;
+  empty.style.display = termArray.length ? 'none' : '';
+  const wantVirtual = termArray.length > VIRTUAL_TERM_ROWS;
+  // A different potential (a mutation, an undo, an import) starts the list
+  // over at the top; switching between the two layouts also has to clear,
+  // since the rows are positioned differently in each.
+  if (wantVirtual !== termVirtual || termListPotential !== state.potential) {
+    list.innerHTML = '';
+    termRowPool = [];
+    termSpacer = null;
+    list.scrollTop = 0;
+    list.classList.toggle('qp-virtual', wantVirtual);
+    termVirtual = wantVirtual;
+    termListPotential = state.potential;
   }
+  if (!wantVirtual) {
+    list.innerHTML = '';
+    termRowPool = [];
+    for (const t of termArray) {
+      const row = makeTermRow();
+      fillTermRow(row, t, null);
+      list.appendChild(row);
+    }
+    return;
+  }
+  if (!termSpacer) {
+    termSpacer = document.createElement('div');
+    termSpacer.className = 'qp-term-spacer';
+    list.appendChild(termSpacer);
+  }
+  if (!termScrollBound) { list.addEventListener('scroll', onTermListScroll); termScrollBound = true; }
+  renderTermWindow(list);
 }
 function keyForTerm(t) { return t.word.join(','); }
 function QP_removeTerm(t) {
@@ -2590,18 +2682,45 @@ function renderInspector() {
   }
 }
 
+// Building the rows is cheap — a few dozen short lines — but the
+// scroll-to-newest at the end is not: reading OR writing scrollTop forces a
+// synchronous layout of the whole page, and with one DOM row per potential
+// term in the document that measured over a second. Two defences:
+// `historyShown` skips the whole rebuild (and the scroll with it) when the
+// list would come out identical, and scheduleHistoryRender() coalesces the
+// several requests a single mutation makes into one pass on the next frame,
+// off the path the mutation's progress panel waits on.
+let historyShown = null;      // what the list currently displays
+let historyRenderQueued = false;
+function scheduleHistoryRender() {
+  if (historyRenderQueued) return;
+  historyRenderQueued = true;
+  const run = () => {
+    if (!historyRenderQueued) return; // whichever of the two fires first wins
+    historyRenderQueued = false;
+    renderHistory();
+  };
+  requestAnimationFrame(run);
+  // A hidden tab never runs an animation frame, and the list would otherwise
+  // sit stale until it was looked at again; the timer keeps it honest.
+  setTimeout(run, 100);
+}
 function renderHistory() {
   document.getElementById('histCount').textContent = history.length;
   const list = document.getElementById('histList');
-  list.innerHTML = '';
-  history.forEach((h, i) => {
-    const div = document.createElement('div');
-    div.className = 'qp-h-item' + (i === historyIndex ? ' qp-current' : '');
-    div.textContent = (i + 1) + '. ' + h.label;
-    div.onclick = () => restoreSnapshot(i);
-    list.appendChild(div);
-  });
-  list.scrollTop = list.scrollHeight;
+  const key = historyIndex + '/' + history.map(h => h.label).join('\u0000');
+  if (key !== historyShown) {
+    historyShown = key;
+    list.innerHTML = '';
+    history.forEach((h, i) => {
+      const div = document.createElement('div');
+      div.className = 'qp-h-item' + (i === historyIndex ? ' qp-current' : '');
+      div.textContent = (i + 1) + '. ' + h.label;
+      div.onclick = () => restoreSnapshot(i);
+      list.appendChild(div);
+    });
+    list.scrollTop = list.scrollHeight; // only when the rows actually changed
+  }
   document.getElementById('undoBtn').disabled = historyIndex <= 0;
   document.getElementById('redoBtn').disabled = historyIndex >= history.length - 1;
 }
@@ -2673,7 +2792,7 @@ function applyFieldSwitch(target) {
   else addMessage('Switched coefficient field.', 'ok');
 }
 
-function renderAll() { render(); renderStats(); renderTerms(); renderDraftBar(); renderInspector(); renderHistory(); }
+function renderAll() { render(); renderStats(); renderTerms(); renderDraftBar(); renderInspector(); scheduleHistoryRender(); }
 
 /* ======================================================================
    PART 6 — wiring
