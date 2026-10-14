@@ -908,10 +908,15 @@ function QPEngine() {
     // potential term names it. That's the genuine degeneracy witness;
     // scanning `current` for length-2 terms alone would miss it.
     // Counted from the multiplicities of each directed vertex pair — the
-    // number of 2-cycles between i and j is (arrows i->j) * (arrows j->i),
-    // summed over unordered pairs. Same number as comparing every pair of
-    // arrows, without the quadratic scan (which, on a quiver that has just
-    // grown to tens of thousands of arrows, dominated the whole mutation).
+    // number of 2-cycles between i and j is min(arrows i->j, arrows j->i),
+    // summed over unordered pairs: that is how many arrows one way can be
+    // paired off against an arrow the other way, which is what the
+    // splitting step cancels. (Not the product, which counts 2-cycles as
+    // distinct closed paths and so reports 2 for the quiver with two arrows
+    // i->j and one j->i, where only one pair can ever cancel.) Done from
+    // the multiplicities rather than by comparing every pair of arrows,
+    // which on a quiver that has just grown to tens of thousands of arrows
+    // dominated the whole mutation.
     const dirCount = new Map();
     for (const a of arrows.values()) {
       if (a.source === a.target) continue;
@@ -924,7 +929,7 @@ function QPEngine() {
       const src = +key.slice(0, comma), tgt = +key.slice(comma + 1);
       if (src >= tgt) continue; // count each unordered pair once
       const back = dirCount.get(tgt + ',' + src);
-      if (back) residual2Cycles += n * back;
+      if (back) residual2Cycles += Math.min(n, back);
     }
     if (residual2Cycles > 0) warnings.push(`Resulting quiver still has ${residual2Cycles} two-cycle` + (residual2Cycles != 1 ? 's' : '') + ' (a pair of arrows i↔j survives with no way to cancel it) — the potential is degenerate.');
 
@@ -1321,7 +1326,7 @@ function quiverCacheStamp(value) {
   return { quiver: Q, size: Q.arrows.size, nextArrowId: Q.nextArrowId, value };
 }
 let geometryCache = null;   // { quiver, size, nextArrowId, value: {geo, bundleGeo} }
-let structCache = null;     // { quiver, size, nextArrowId, value: {loopIds, twoCycleIds, flaggedVertices} }
+let structCache = null;     // { quiver, size, nextArrowId, value: {loopIds, twoCycleIds, flaggedVertices, twoCycleCount} }
 
 // Curve offsets for every arrow, and the bundles that several parallel
 // arrows collapse into. Cached because render(), both hit tests and the
@@ -2041,14 +2046,29 @@ function getStructuralIssues(quiver) {
     if (!bucket) { bucket = []; byDir.set(key, bucket); }
     bucket.push(a.id);
   }
+  // `twoCycleCount` is how many 2-cycles there are, which is NOT
+  // twoCycleIds.size / 2: that divisor assumes every flagged arrow is half
+  // of its own 2-cycle, which fails as soon as the two directions between a
+  // pair of vertices have different multiplicities. Two arrows a->b and one
+  // b->a flag all three arrows, and 3 / 2 reported "1.5 two-cycles".
+  // The number between a and b is min(#(a->b), #(b->a)) -- how many arrows
+  // one way can actually be paired off against an arrow the other way,
+  // which is what the splitting step cancels; the leftover arrows in the
+  // bigger direction survive and belong to no 2-cycle.
+  let twoCycleCount = 0;
   for (const [key, ids] of byDir) {
     const comma = key.indexOf(',');
-    const src = key.slice(0, comma), tgt = key.slice(comma + 1);
-    if (!byDir.has(tgt + ',' + src)) continue;
+    const src = +key.slice(0, comma), tgt = +key.slice(comma + 1);
+    const back = byDir.get(tgt + ',' + src);
+    if (!back) continue;
     for (const id of ids) twoCycleIds.add(id);
-    flaggedVertices.add(+src); flaggedVertices.add(+tgt);
+    flaggedVertices.add(src); flaggedVertices.add(tgt);
+    // Numeric comparison, so each unordered pair is counted once. (The old
+    // code sliced these out as strings, where "10" < "9" -- harmless there
+    // because nothing compared them, but not something to inherit here.)
+    if (src < tgt) twoCycleCount += Math.min(ids.length, back.length);
   }
-  return { loopIds, twoCycleIds, flaggedVertices };
+  return { loopIds, twoCycleIds, flaggedVertices, twoCycleCount };
 }
 
 // Which arrows are flagged depends only on each arrow's (source, target), so
@@ -2068,8 +2088,7 @@ function structuralIssues() {
 
 let structWarnDismissedKey = null;
 function updateStructuralWarning(issues) {
-  const { loopIds, twoCycleIds } = issues;
-  const pairs = twoCycleIds.size / 2;
+  const { loopIds, twoCycleIds, twoCycleCount: pairs } = issues;
   const el = document.getElementById('structWarn');
   const row = document.getElementById('statIssueRow');
   const count = document.getElementById('statIssues');
